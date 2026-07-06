@@ -3,6 +3,8 @@
 Train a Deep Koopman dynamics model using LeRobot `observation.state[:12]`
 and the first 12 raw pressure channels. State inputs are normalized with
 LeRobot `meta/stats.json`; pressure inputs are kept in their native 0-1 range.
+The raw LeRobot trajectories are 10 Hz; the default data pipeline upsamples
+each episode to 50 Hz before constructing Koopman windows.
 
 This implementation follows
 `motion_control_training/reference/Learning_Koopman_with_Reg_HPN.py` for the
@@ -30,8 +32,18 @@ The training buffer layout matches the HPN reference script:
 [sample, Ksteps + 1, raw_pressure_12 + normalized_state_12]
 ```
 
-Unlike the original `.mat` loader, windows are constructed inside each episode
-only, so no training sequence crosses an episode boundary.
+Before windowing, each episode is converted from 10 Hz to 50 Hz with:
+
+```text
+state:    linear interpolation between adjacent 10 Hz samples
+pressure: zero-order hold; u_t is repeated for all 5 substeps until t+1
+```
+
+For original samples `x_t, x_{t+1}`, `upsample_factor=5` creates states at
+fractions `0/5, 1/5, 2/5, 3/5, 4/5`, then appends the final original state.
+Pressure rows use `u_t` for those 5 substeps. Unlike the original `.mat`
+loader, windows are constructed inside each episode only, so no training
+sequence crosses an episode boundary.
 
 ## Default Parameters
 
@@ -40,6 +52,9 @@ with two engineering choices enabled by default:
 
 ```text
 Ksteps          = 50
+source_hz       = 10
+target_hz       = 50
+upsample_factor = 5
 u_dim           = 12
 state_dim       = 12
 encode_dim      = 12
@@ -78,10 +93,11 @@ reference. `B` is a trainable `[u_dim, Nkoopman]` matrix. The loss keeps the
 reference terms: lifted linear consistency, state prediction, augmentation
 consistency, eigenvalue regularization, and controllability SVD regularization.
 
-At `Ksteps=50`, the current LeRobot dataset builds 26,819 train windows. With
-batch size 4096 and default `drop_last=False`, one epoch has
-`ceil(26819 / 4096) = 7` optimizer steps. A 2000-epoch run is therefore about
-14,000 optimizer steps, plus validation every epoch.
+At `Ksteps=50`, the current LeRobot dataset would build 26,819 train windows
+without upsampling. With default 10 Hz to 50 Hz upsampling, this becomes
+150,167 train windows, and `Ksteps=50` is about a 1-second horizon. With batch
+size 4096 and default `drop_last=False`, one epoch has
+`ceil(150167 / 4096) = 37` optimizer steps, plus validation every epoch.
 
 ## Train
 
@@ -126,8 +142,9 @@ Useful quick smoke test:
 
 ```bash
 conda run -n soft_vla_cuda python motion_control_training/koopman/train_koopman_lerobot.py \
-  --run-name smoke \
+  --run-name upsample50hz_smoke \
   --epochs 1 \
+  --ksteps 50 \
   --max-train-windows 512 \
   --max-val-windows 256
 ```
@@ -158,8 +175,9 @@ conda run -n soft_vla_cuda python motion_control_training/koopman/validate_koopm
 
 This writes `validation_rollout.json` next to the checkpoint with normalized
 and raw-state RMSE for teacher-forced one-step prediction and multi-step
-rollout. Add `--save-npz` to save predicted normalized trajectories for
-plotting or inspection.
+rollout. New checkpoints store `upsample_factor=5`, so validation uses the same
+50 Hz episode trajectories by default. Add `--save-npz` to save predicted
+normalized trajectories for plotting or inspection.
 
 Validation modes:
 
@@ -170,13 +188,13 @@ rollout: starts from x_0, repeatedly applies real pressure controls for N steps
 
 ## Timing Estimate
 
-Benchmark command with default training loop, full `Ksteps=50`, full windows,
-and WandB code path disabled from upload:
+Benchmark command with default training loop, full 50 Hz `Ksteps=50`, full
+windows, and WandB code path disabled from upload:
 
 ```bash
 /usr/bin/time -p conda run -n soft_vla_cuda python motion_control_training/koopman/train_koopman_lerobot.py \
-  --run-name timing_k50_5epoch_wandb_disabled \
-  --epochs 5 \
+  --run-name timing_50hz_k50_1epoch_wandb_disabled \
+  --epochs 1 \
   --log-every 1 \
   --patience 0 \
   --wandb \
@@ -186,24 +204,31 @@ and WandB code path disabled from upload:
 Observed on RTX 4060 Laptop GPU:
 
 ```text
-train_windows=26819
-val_windows=7090
-optimizer_steps_per_epoch=7
-mean_epoch_seconds=1.1540
-median_epoch_seconds=1.1137
-process_real_seconds_for_5_epochs=11.27
+train_windows=150167
+val_windows=39566
+optimizer_steps_per_epoch=37
+val_batches_per_epoch=10
+epoch_seconds=7.00
+process_real_seconds_for_1_epoch=12.75
 ```
 
 Projected 2000-epoch training time:
 
 ```text
-epoch-only estimate: 1.1540 * 2000 = 2308s = 38.5min
-practical estimate with startup/WandB overhead: about 40-50min
+epoch-only estimate: 7.00 * 2000 = 14000s = 3.89h
+practical estimate with startup/WandB/checkpoint overhead: about 4.0-4.5h
 ```
 
-## Strict Reference Check Run
+Projected 3000-epoch training time:
 
-Reference-style 50-step training check:
+```text
+epoch-only estimate: 7.00 * 3000 = 21000s = 5.83h
+practical estimate: about 6.0-6.8h
+```
+
+## Legacy 10 Hz Strict Reference Check Run
+
+This check was run before enabling default 10 Hz to 50 Hz upsampling.
 
 ```text
 run: motion_control_training/koopman/runs/robot_records_7_03_1_state12_pressure12_k50_epoch50_refstrict

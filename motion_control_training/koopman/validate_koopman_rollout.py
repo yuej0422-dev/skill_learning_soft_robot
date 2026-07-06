@@ -15,6 +15,7 @@ try:
         load_lerobot_state_stats,
         parse_int_list,
         resolve_device,
+        upsample_episode_arrays,
     )
 except ImportError:  # pragma: no cover - direct script execution
     from model import KoopmanNetwork
@@ -24,6 +25,7 @@ except ImportError:  # pragma: no cover - direct script execution
         load_lerobot_state_stats,
         parse_int_list,
         resolve_device,
+        upsample_episode_arrays,
     )
 
 
@@ -135,6 +137,10 @@ def validate(args: argparse.Namespace) -> dict:
         state_mean = full_mean[state_indices]
         state_std = full_std[state_indices]
     state_std = np.maximum(state_std, args.norm_eps)
+    if args.upsample_factor is None:
+        upsample_factor = int(metadata.get("upsample_factor", 1))
+    else:
+        upsample_factor = int(args.upsample_factor)
 
     episodes = load_episode_arrays(dataset_root, state_indices, pressure_indices)
     selected_episodes = choose_episodes(args, checkpoint, sorted(episodes))
@@ -148,6 +154,7 @@ def validate(args: argparse.Namespace) -> dict:
 
     for episode in selected_episodes:
         states_raw, pressures = episodes[episode]
+        states_raw, pressures = upsample_episode_arrays(states_raw, pressures, upsample_factor)
         states_norm = (states_raw - state_mean) / state_std
 
         err_norm, err_raw, one_step_pred = one_step_metrics(model, states_norm, pressures, state_std, device)
@@ -201,6 +208,8 @@ def validate(args: argparse.Namespace) -> dict:
         "state_indices": state_indices,
         "pressure_indices": pressure_indices,
         "rollout_steps": int(args.rollout_steps),
+        "upsample_factor": int(upsample_factor),
+        "upsample_method": "state_linear_interpolation_pressure_zero_order_hold",
         "one_step": {
             "normalized_rmse_mean": one_step_norm_mean,
             "normalized_rmse_per_dim": one_step_norm_per_dim,
@@ -251,6 +260,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--episodes", type=str, default="", help="Optional comma/slice episode ids, e.g. 0,1,2.")
     parser.add_argument("--max-episodes", type=int, default=8)
     parser.add_argument("--rollout-steps", type=int, default=50)
+    parser.add_argument("--upsample-factor", type=int, default=None, help="Defaults to checkpoint metadata; older checkpoints use 1.")
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
     parser.add_argument("--norm-eps", type=float, default=1e-6)
     parser.add_argument("--output-json", type=Path, default=None)
@@ -267,4 +277,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

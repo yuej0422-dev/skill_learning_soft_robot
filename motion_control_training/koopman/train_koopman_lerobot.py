@@ -139,17 +139,57 @@ def split_episodes(episodes: Sequence[int], val_ratio: float, seed: int) -> tupl
     return train_episodes, val_episodes
 
 
+def upsample_episode_arrays(
+    states: np.ndarray,
+    pressures: np.ndarray,
+    factor: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Upsample one episode by linear state interpolation and zero-order-hold pressure.
+
+    For a 10 Hz -> 50 Hz conversion, ``factor=5``. Between original sample
+    ``t`` and ``t+1`` this creates states at fractions
+    ``0/5, 1/5, 2/5, 3/5, 4/5`` and repeats pressure ``u_t`` for those
+    five substeps. The final original state and pressure are appended so the
+    returned arrays stay row-aligned.
+    """
+
+    factor = int(factor)
+    if factor < 1:
+        raise ValueError(f"upsample factor must be >= 1, got {factor}")
+    if states.shape[0] != pressures.shape[0]:
+        raise ValueError(f"state/pressure length mismatch: {states.shape[0]} vs {pressures.shape[0]}")
+    if factor == 1 or states.shape[0] <= 1:
+        return states.astype(np.float32, copy=False), pressures.astype(np.float32, copy=False)
+
+    fractions = (np.arange(factor, dtype=np.float32) / float(factor)).reshape(1, factor, 1)
+    segment_starts = states[:-1, None, :]
+    segment_deltas = (states[1:] - states[:-1])[:, None, :]
+    upsampled_states = segment_starts + fractions * segment_deltas
+    upsampled_states = upsampled_states.reshape(-1, states.shape[1])
+    upsampled_states = np.concatenate([upsampled_states, states[-1:]], axis=0).astype(np.float32)
+
+    upsampled_pressures = np.repeat(pressures[:-1], repeats=factor, axis=0)
+    upsampled_pressures = np.concatenate([upsampled_pressures, pressures[-1:]], axis=0).astype(np.float32)
+    return upsampled_states, upsampled_pressures
+
+
 def build_koopman_buffer(
     episodes: dict[int, tuple[np.ndarray, np.ndarray]],
     episode_ids: Sequence[int],
     state_mean: np.ndarray,
     state_std: np.ndarray,
     ksteps: int,
+    upsample_factor: int,
 ) -> tuple[np.ndarray, dict[str, int]]:
     windows: list[np.ndarray] = []
     skipped = 0
+    original_frames = 0
+    upsampled_frames = 0
     for episode in episode_ids:
         states, pressures = episodes[int(episode)]
+        original_frames += int(len(states))
+        states, pressures = upsample_episode_arrays(states, pressures, upsample_factor)
+        upsampled_frames += int(len(states))
         if len(states) <= ksteps:
             skipped += 1
             continue
@@ -163,6 +203,9 @@ def build_koopman_buffer(
     stats = {
         "episodes": len(episode_ids),
         "skipped_short_episodes": skipped,
+        "original_frames": original_frames,
+        "upsampled_frames": upsampled_frames,
+        "upsample_factor": int(upsample_factor),
         "windows": int(buffer.shape[0]),
     }
     return buffer, stats
@@ -214,6 +257,10 @@ def init_wandb(args: argparse.Namespace, output_dir: Path, config: dict, metadat
                 "state_normalization": metadata["state_normalization"],
                 "pressure_normalization": metadata["pressure_normalization"],
                 "ksteps": metadata["ksteps"],
+                "source_hz": metadata["source_hz"],
+                "target_hz": metadata["target_hz"],
+                "upsample_factor": metadata["upsample_factor"],
+                "upsample_method": metadata["upsample_method"],
                 "train_drop_last": metadata["train_drop_last"],
                 "train_buffer": metadata["train_buffer"],
                 "val_buffer": metadata["val_buffer"],
@@ -294,6 +341,7 @@ def train(args: argparse.Namespace) -> Path:
         state_mean,
         state_std,
         args.ksteps,
+        args.upsample_factor,
     )
     val_buffer, val_buffer_stats = build_koopman_buffer(
         episodes,
@@ -301,6 +349,7 @@ def train(args: argparse.Namespace) -> Path:
         state_mean,
         state_std,
         args.ksteps,
+        args.upsample_factor,
     )
 
     if args.max_train_windows > 0 and train_buffer.shape[0] > args.max_train_windows:
@@ -367,6 +416,10 @@ def train(args: argparse.Namespace) -> Path:
         "pressure_columns": [pressure_columns[i] for i in pressure_indices],
         "pressure_normalization": "none",
         "ksteps": int(args.ksteps),
+        "source_hz": float(args.source_hz),
+        "target_hz": float(args.target_hz),
+        "upsample_factor": int(args.upsample_factor),
+        "upsample_method": "state_linear_interpolation_pressure_zero_order_hold",
         "train_drop_last": bool(args.drop_last),
         "train_episodes": train_episodes,
         "val_episodes": val_episodes,
@@ -382,7 +435,10 @@ def train(args: argparse.Namespace) -> Path:
     wandb_run = init_wandb(args, output_dir, config, metadata)
 
     print(f"dataset_root={dataset_root}")
-    print(f"device={device} train_windows={train_buffer.shape[0]} val_windows={val_buffer.shape[0]}")
+    print(
+        f"device={device} train_windows={train_buffer.shape[0]} val_windows={val_buffer.shape[0]} "
+        f"upsample_factor={args.upsample_factor}"
+    )
     print(f"encode_layers={encode_layers} n_koopman={n_state + args.encode_dim} ksteps={args.ksteps}")
 
     metrics_path = output_dir / "metrics.csv"
@@ -509,6 +565,14 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--state-indices", type=str, default="0:12", help="Use first 12 LeRobot state dims by default.")
     parser.add_argument("--pressure-indices", type=str, default="0:12", help="Use first 12 raw pressure dims by default.")
     parser.add_argument("--ksteps", type=int, default=50)
+    parser.add_argument("--source-hz", type=float, default=10.0)
+    parser.add_argument("--target-hz", type=float, default=50.0)
+    parser.add_argument(
+        "--upsample-factor",
+        type=int,
+        default=5,
+        help="Episode upsample factor. Default 5 converts 10 Hz trajectories to 50 Hz.",
+    )
     parser.add_argument("--encode-dim", type=int, default=12)
     parser.add_argument("--hidden-sizes", type=str, default="64,128,64")
     parser.add_argument("--epochs", type=int, default=700)
