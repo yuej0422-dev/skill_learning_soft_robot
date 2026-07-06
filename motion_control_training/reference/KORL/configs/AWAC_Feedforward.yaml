@@ -1,0 +1,23 @@
+awac_lambda: 0.1
+batch_size: 1024
+buffer_size: 10000000
+checkpoints_path: 'D:/RL_Soft_Robot/CORL-main/checkpoints/HPN/BL-BL-BL/AWAC_HPN_v1/expert'
+env: HPN
+group: BL-BL-BL
+name: AWAC-FF
+project: KORL-HPN
+deterministic_torch: false
+device: cuda
+eval_freq: 1000
+gamma: 0.99
+hidden_dim: 256
+learning_rate: 6e-7
+normalize: false
+normalize_reward: true
+max_timesteps: 50000
+n_episodes: 20
+
+seed: 512
+tau: 0.005
+
+dataset_path: 'D:/RL_Soft_Robot/DeepKoop_OfflineRL/dataset_orig/buffer_HPN250930_BL-BL-BL_expert.mat'

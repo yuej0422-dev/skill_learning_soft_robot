@@ -1,0 +1,15 @@
+dataset:
+  config: configs/dataset.real_records.yaml
+  root: data/real_robot_records_6_30_5epis_lerobot
+  episode_index: 0
+
+policy:
+  policy_type: smolvla
+  checkpoint: outputs/smolvla_real_full_finetune/checkpoints/last/pretrained_model
+  device: cuda
+
+inference:
+  dry_run: true
+  max_frames: 40
+  output_dir: outputs/offline_inference_real_records
+

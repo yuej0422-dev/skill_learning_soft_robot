@@ -1,0 +1,19 @@
+{
+  "dataset": {
+    "source": "local",
+    "root": "data/real_robot_records_6_30_5epis_lerobot",
+    "repo_id": "local/real_robot_records_6_30_5epis",
+    "fps": 10,
+    "episodes": 5,
+    "frames": 2610,
+    "image_keys": [
+      "observation.images.main",
+      "observation.images.wrist_left",
+      "observation.images.wrist_right"
+    ],
+    "state_key": "observation.state",
+    "action_key": "action",
+    "task_key": "task",
+    "rename_map": {}
+  }
+}

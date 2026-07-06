@@ -1,0 +1,81 @@
+# Python/cache
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Virtual environments and local env files
+.venv/
+venv/
+env/
+*.env
+.env*
+
+# Editors/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+tmp/
+temp/
+.tmp/
+
+# Large robot datasets and LeRobot conversion outputs
+data_collection/robot_records*/
+data_collection/*records*/
+lerobot_conversion/outputs/
+lerobot_conversion/test_outputs/
+vision_to_state/lerobot_v3*/
+**/lerobot_v3*/
+
+# Training/evaluation outputs
+**/outputs/
+**/runs/
+**/wandb/
+**/tensorboard/
+**/lightning_logs/
+**/checkpoints/
+**/checkpoint*/
+**/training_state/
+
+# Model weights and generated artifacts
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.bin
+*.pkl
+*.joblib
+*.mat
+*.egg-info/
+
+# Large media/data sidecars
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.zst
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.npz
+*.npy
+*.parquet
+*.arrow
+*.hdf5
+*.h5
+
+# Project-specific archives/releases
+soft_vla/archive/
+autodl_release/upload/
+motion_control_training/reference/KORL/dataset_orig/

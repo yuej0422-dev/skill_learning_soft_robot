@@ -1,0 +1,18 @@
+{
+  "dataset": {
+    "source": "local",
+    "root": "data/synthetic_soft_robot_vla",
+    "repo_id": "local/synthetic_soft_robot_vla",
+    "fps": 10,
+    "episodes": 12,
+    "frames_per_episode": 40,
+    "image_keys": [
+      "observation.images.main",
+      "observation.images.wrist_left",
+      "observation.images.wrist_right"
+    ],
+    "state_key": "observation.state",
+    "action_key": "action",
+    "task_key": "task"
+  }
+}

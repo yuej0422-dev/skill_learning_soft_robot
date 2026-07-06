@@ -1,0 +1,51 @@
+dataset:
+  source: local
+  root: data/real_robot_records_6_30_5epis_lerobot
+  repo_id: local/real_robot_records_6_30_5epis
+  split: train
+  image_keys:
+    - observation.images.main
+    - observation.images.wrist_left
+    - observation.images.wrist_right
+  state_key: observation.state
+  action_key: action
+  task_key: task
+  fps: 10
+  episodes: 5
+  rename_map: {}
+
+state:
+  dim: 13
+  pose_representation: rotation_vector
+  contains_gripper: true
+  gripper_index: 12
+  gripper_source: u_paw1
+  gripper_mode: binary_open_close
+  names:
+    - tcp_x
+    - tcp_y
+    - tcp_z
+    - tcp_rx
+    - tcp_ry
+    - tcp_rz
+    - tcp_vx
+    - tcp_vy
+    - tcp_vz
+    - tcp_wx
+    - tcp_wy
+    - tcp_wz
+    - gripper_state
+
+action:
+  dim: 7
+  is_delta_tcp: true
+  tcp_delta_source: next_tcp_pose_minus_current_tcp_pose
+  raw_pressure_action_used: false
+  rotation_representation: rotation_vector
+  gripper_index: 6
+  gripper_source: next_frame_u_paw1
+  gripper_mode: binary_absolute_target_position
+  gripper_mapping:
+    "0": open
+    "1": closed
+

@@ -1,0 +1,220 @@
+from __future__ import annotations
+
+import copy
+from dataclasses import dataclass
+from typing import Any
+
+import numpy as np
+import torch
+
+from soft_vla.schemas import GRIPPER_ACTION_INDEX
+
+
+@dataclass(frozen=True)
+class GripperSamplingReport:
+    raw_transition_frame_ratio: float
+    weighted_transition_mass_ratio: float
+    open_frame_ratio: float
+    closed_frame_ratio: float
+    transition_indices: list[int]
+    episode_transition_counts: dict[int, int]
+
+
+def _as_numpy(value: Any) -> np.ndarray:
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().numpy()
+    return np.asarray(value)
+
+
+def apply_hybrid_action_stats(stats: dict[str, Any], *, gripper_index: int = GRIPPER_ACTION_INDEX) -> dict[str, Any]:
+    """Return stats where action gripper normalization is identity under MEAN_STD processors.
+
+    LeRobot 0.4.4 normalizes a whole action vector using one mode. Setting the
+    selected action dimension to mean=0/std=1 gives identity behavior for that
+    dimension while preserving mean/std for TCP dimensions.
+    """
+    patched = copy.deepcopy(stats)
+    action_stats = patched.get("action")
+    if not isinstance(action_stats, dict):
+        raise KeyError("stats must contain action statistics")
+    for key, value in {"mean": 0.0, "std": 1.0}.items():
+        arr = list(action_stats[key])
+        if gripper_index >= len(arr):
+            raise IndexError(f"gripper_index {gripper_index} out of range for action.{key}")
+        arr[gripper_index] = value
+        action_stats[key] = arr
+    return patched
+
+
+def extract_dataset_arrays(dataset) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    hf_dataset = getattr(dataset, "hf_dataset", None)
+    if hf_dataset is not None:
+        actions = np.stack([np.asarray(x, dtype=np.float32) for x in hf_dataset["action"]])
+        episodes = np.asarray(hf_dataset["episode_index"], dtype=np.int64)
+        frames = np.asarray(hf_dataset["frame_index"], dtype=np.int64)
+        indices = np.asarray(hf_dataset["index"], dtype=np.int64) if "index" in hf_dataset.column_names else np.arange(len(actions))
+        return actions, episodes, frames, indices
+    actions: list[np.ndarray] = []
+    episodes: list[int] = []
+    frames: list[int] = []
+    indices: list[int] = []
+    for i in range(len(dataset)):
+        sample = dataset[i]
+        actions.append(_as_numpy(sample["action"]).astype(np.float32))
+        episodes.append(int(_as_numpy(sample.get("episode_index", -1)).reshape(-1)[0]))
+        frames.append(int(_as_numpy(sample.get("frame_index", i)).reshape(-1)[0]))
+        indices.append(i)
+    return np.stack(actions), np.asarray(episodes), np.asarray(frames), np.asarray(indices)
+
+
+def find_transition_indices(actions: np.ndarray, episodes: np.ndarray) -> np.ndarray:
+    gripper = actions[:, GRIPPER_ACTION_INDEX].astype(np.float32)
+    transitions: list[int] = []
+    for i in range(1, len(gripper)):
+        if episodes[i] != episodes[i - 1]:
+            continue
+        if gripper[i] != gripper[i - 1]:
+            transitions.append(i)
+    return np.asarray(transitions, dtype=np.int64)
+
+
+def transition_window_mask(
+    actions: np.ndarray,
+    episodes: np.ndarray,
+    *,
+    before_steps: int = 5,
+    after_steps: int = 5,
+) -> tuple[np.ndarray, np.ndarray]:
+    transition_indices = find_transition_indices(actions, episodes)
+    mask = np.zeros(len(actions), dtype=bool)
+    for idx in transition_indices:
+        ep = episodes[idx]
+        lo = max(0, idx - before_steps)
+        hi = min(len(actions), idx + after_steps + 1)
+        for j in range(lo, hi):
+            if episodes[j] == ep:
+                mask[j] = True
+    return mask, transition_indices
+
+
+def build_transition_weights(
+    dataset,
+    *,
+    enabled: bool = True,
+    before_steps: int = 5,
+    after_steps: int = 5,
+    transition_weight: float = 4.0,
+    normal_weight: float = 1.0,
+) -> tuple[torch.DoubleTensor, GripperSamplingReport]:
+    actions, episodes, _frames, _indices = extract_dataset_arrays(dataset)
+    transition_mask, transition_indices = transition_window_mask(
+        actions, episodes, before_steps=before_steps, after_steps=after_steps
+    )
+    weights = np.full(len(actions), float(normal_weight), dtype=np.float64)
+    if enabled:
+        weights[transition_mask] = float(transition_weight)
+    gripper = actions[:, GRIPPER_ACTION_INDEX]
+    episode_transition_counts = {
+        int(ep): int(np.sum(episodes[transition_indices] == ep)) for ep in sorted(set(episodes.tolist()))
+    }
+    report = GripperSamplingReport(
+        raw_transition_frame_ratio=float(np.mean(transition_mask)) if len(transition_mask) else 0.0,
+        weighted_transition_mass_ratio=float(weights[transition_mask].sum() / weights.sum()) if weights.sum() else 0.0,
+        open_frame_ratio=float(np.mean(gripper == 0.0)) if len(gripper) else 0.0,
+        closed_frame_ratio=float(np.mean(gripper == 1.0)) if len(gripper) else 0.0,
+        transition_indices=transition_indices.astype(int).tolist(),
+        episode_transition_counts=episode_transition_counts,
+    )
+    return torch.as_tensor(weights, dtype=torch.double), report
+
+
+def smolvla_weighted_action_loss(
+    policy,
+    batch: dict[str, torch.Tensor],
+    *,
+    tcp_weight: float = 1.0,
+    gripper_weight: float = 3.0,
+    noise=None,
+    time=None,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    """Compute SmolVLA flow loss with per-action-dimension weights.
+
+    This mirrors the public SmolVLAPolicy.forward path up to the unreduced
+    `[B, T, D]` loss tensor, then applies a 7D action weight vector.
+    """
+    from lerobot.policies.smolvla.modeling_smolvla import ACTION, OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS, OBS_STATE
+
+    if policy.config.adapt_to_pi_aloha:
+        batch[OBS_STATE] = policy._pi_aloha_decode_state(batch[OBS_STATE])
+        batch[ACTION] = policy._pi_aloha_encode_actions_inv(batch[ACTION])
+
+    images, img_masks = policy.prepare_images(batch)
+    state = policy.prepare_state(batch)
+    lang_tokens = batch[f"{OBS_LANGUAGE_TOKENS}"]
+    lang_masks = batch[f"{OBS_LANGUAGE_ATTENTION_MASK}"]
+    actions = policy.prepare_action(batch)
+    losses = policy.model.forward(images, img_masks, lang_tokens, lang_masks, state, actions, noise, time)
+    losses = losses[:, :, : policy.config.max_action_dim]
+
+    pad = batch.get("action_is_pad")
+    if pad is None:
+        pad = batch.get("actions_id_pad")
+    valid = None
+    if pad is not None:
+        valid = (~pad).to(losses.device).bool()
+        losses = losses * valid.unsqueeze(-1)
+
+    weights = torch.ones(policy.config.max_action_dim, device=losses.device, dtype=losses.dtype) * float(tcp_weight)
+    weights[GRIPPER_ACTION_INDEX] = float(gripper_weight)
+    weighted = losses * weights.view(1, 1, -1)
+
+    if valid is not None:
+        denom_time = valid.sum().clamp_min(1).to(losses.dtype)
+        tcp_loss = losses[:, :, :GRIPPER_ACTION_INDEX].sum() / (denom_time * GRIPPER_ACTION_INDEX)
+        gripper_loss = losses[:, :, GRIPPER_ACTION_INDEX].sum() / denom_time
+        total_loss = weighted.sum() / (denom_time * policy.config.max_action_dim)
+    else:
+        tcp_loss = losses[:, :, :GRIPPER_ACTION_INDEX].mean()
+        gripper_loss = losses[:, :, GRIPPER_ACTION_INDEX].mean()
+        total_loss = weighted.mean()
+
+    return total_loss, {
+        "loss": float(total_loss.detach().cpu()),
+        "tcp_loss": float(tcp_loss.detach().cpu()),
+        "gripper_loss": float(gripper_loss.detach().cpu()),
+        "weighted_gripper_loss": float((gripper_loss * float(gripper_weight)).detach().cpu()),
+        "tcp_weight": float(tcp_weight),
+        "gripper_weight": float(gripper_weight),
+    }
+
+
+def compute_gripper_metrics(pred_raw: np.ndarray, gt: np.ndarray, *, threshold: float = 0.5) -> dict[str, Any]:
+    pred_raw = np.asarray(pred_raw, dtype=np.float32).reshape(-1)
+    gt = np.asarray(gt, dtype=np.float32).reshape(-1)
+    pred = pred_raw >= threshold
+    true = gt >= threshold
+    tp = int(np.sum(pred & true))
+    tn = int(np.sum(~pred & ~true))
+    fp = int(np.sum(pred & ~true))
+    fn = int(np.sum(~pred & true))
+    total = max(1, len(true))
+    acc = (tp + tn) / total
+    recall_pos = tp / max(1, tp + fn)
+    recall_neg = tn / max(1, tn + fp)
+    precision = tp / max(1, tp + fp)
+    recall = recall_pos
+    f1 = 2 * precision * recall / max(1e-12, precision + recall)
+    return {
+        "accuracy": float(acc),
+        "balanced_accuracy": float((recall_pos + recall_neg) / 2.0),
+        "precision": float(precision),
+        "recall": float(recall),
+        "f1": float(f1),
+        "confusion_matrix": {"tn": tn, "fp": fp, "fn": fn, "tp": tp},
+        "pred_open_ratio": float(np.mean(~pred)) if len(pred) else 0.0,
+        "pred_closed_ratio": float(np.mean(pred)) if len(pred) else 0.0,
+        "gt_open_ratio": float(np.mean(~true)) if len(true) else 0.0,
+        "gt_closed_ratio": float(np.mean(true)) if len(true) else 0.0,
+        "mae": float(np.mean(np.abs(pred_raw - gt))) if len(gt) else 0.0,
+        "rmse": float(np.sqrt(np.mean((pred_raw - gt) ** 2))) if len(gt) else 0.0,
+    }

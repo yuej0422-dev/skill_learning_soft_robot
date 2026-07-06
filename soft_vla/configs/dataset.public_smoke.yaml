@@ -1,0 +1,12 @@
+dataset:
+  source: hub
+  repo_id: lerobot/pusht
+  revision: null
+  root: data/public_smoke_pusht
+  split: train
+  image_keys: []
+  state_key: observation.state
+  action_key: action
+  task_key: task
+  rename_map: {}
+

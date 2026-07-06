@@ -1,0 +1,22 @@
+dataset:
+  config: configs/dataset.synthetic.yaml
+  root: data/synthetic_soft_robot_vla
+
+policy:
+  name: smolvla
+  pretrained_path: lerobot/smolvla_base
+  batch_size: 1
+  steps: 100
+  gradient_accumulation_steps: 1
+  num_workers: 0
+  device: cuda
+  use_amp: true
+  freeze_vision_encoder: false
+  train_expert_only: false
+  train_state_proj: true
+  use_peft: false
+  push_to_hub: false
+  checkpoint_dir: outputs/smolvla_full_finetune_16gb
+  save_freq: 100
+  log_freq: 5
+  eval_freq: 0

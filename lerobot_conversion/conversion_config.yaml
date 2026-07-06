@@ -1,0 +1,76 @@
+input:
+  zip_dir: /home/yuej/skill_learning_soft_robot/vision_to_state/data
+  zip_is_episode: auto
+  temp_dir: /home/yuej/skill_learning_soft_robot/vision_to_state/lerobot_conversion_tmp
+
+output:
+  root: /home/yuej/skill_learning_soft_robot/vision_to_state/lerobot_v3_batch
+  repo_id: local/soft_robot_vla_project_batch
+  robot_type: soft_robot_arm
+  overwrite: false
+
+dataset:
+  fps: auto
+  task_default: "recover soft robot tcp state from synchronized RGB-D observations"
+  strict_mode: true
+  use_videos: true
+
+mapping:
+  observation_state: auto
+  action:
+    columns: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    names:
+      - pressure_0
+      - pressure_1
+      - pressure_2
+      - pressure_3
+      - pressure_4
+      - pressure_5
+      - pressure_6
+      - pressure_7
+      - pressure_8
+      - pressure_9
+      - pressure_10
+      - pressure_11
+  reward: auto
+  success: auto
+  timestamp: auto
+
+cameras:
+  rename:
+    images_cam1: cam_1
+    images_cam2: cam_2
+    depth_cam1: cam_1
+    depth_cam2: cam_2
+  rgb:
+    enabled: true
+    color_order: RGB
+    allow_resize: false
+    allow_crop: false
+  depth:
+    enabled: true
+    native_lerobot_depth: auto
+    save_raw_sidecar: true
+    input_unit: mm
+    output_unit: mm
+    invalid_value: 0
+    depth_min_m: 0.01
+    depth_max_m: 10.0
+    use_log_quantization: true
+
+synchronization:
+  mode: strict
+  tolerance_ms: 5.0
+  missing_frame_policy: error
+  irregular_timestamp_policy: warn
+
+video:
+  encoder: h264
+  pixel_format: auto
+  validate_decode: true
+  random_validation_frames: 20
+
+statistics:
+  quantiles: [0.01, 0.10, 0.50, 0.90, 0.99]
+  compute_camera_stats: true
+  compute_depth_valid_pixel_stats: true

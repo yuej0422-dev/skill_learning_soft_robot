@@ -1,0 +1,36 @@
+dataset:
+  config: configs/dataset.real_records_7_03_1_delta_tcp.yaml
+  root: /home/yuej/skill_learning_soft_robot/lerobot_conversion/outputs/robot_records_7_03_1_delta_tcp
+  episodes: [0, 1]
+  video_backend: pyav
+
+policy:
+  name: smolvla
+  pretrained_path: lerobot/smolvla_base
+  batch_size: 1
+  steps: 2
+  gradient_accumulation_steps: 1
+  num_workers: 0
+  device: cuda
+  use_amp: true
+  freeze_vision_encoder: false
+  train_expert_only: false
+  train_state_proj: true
+  use_peft: false
+  push_to_hub: false
+  checkpoint_dir: outputs/smolvla_real_7_03_1_full_finetune_smoke
+  save_freq: 2
+  log_freq: 1
+  eval_freq: 0
+
+action_normalization:
+  tcp_mode: mean_std
+  gripper_mode: identity
+
+gripper_training:
+  transition_oversampling:
+    enabled: false
+  loss_weight:
+    enabled: false
+    tcp_weight: 1.0
+    gripper_weight: 1.0

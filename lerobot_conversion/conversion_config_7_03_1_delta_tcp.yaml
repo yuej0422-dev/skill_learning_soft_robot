@@ -1,0 +1,92 @@
+input:
+  source_dir: /home/yuej/skill_learning_soft_robot/data_collection/robot_records_7_03_1
+  temp_dir: /home/yuej/skill_learning_soft_robot/lerobot_conversion/outputs/.tmp
+
+output:
+  root: /home/yuej/skill_learning_soft_robot/lerobot_conversion/outputs/robot_records_7_03_1_delta_tcp
+  repo_id: local/soft_robot_7_03_1_delta_tcp
+  robot_type: soft_robot_arm
+  overwrite: true
+  remove_empty_images_dir: true
+
+dataset:
+  fps: auto
+  task_default: "pick up the apple and place it on the electronic scale"
+  strict_mode: true
+  use_videos: true
+
+mapping:
+  observation_state: tcp_with_gripper
+  action:
+    type: delta_tcp
+    tcp_columns:
+      - x_pos1
+      - x_pos2
+      - x_pos3
+      - x_ang_radian1
+      - x_ang_radian2
+      - x_ang_radian3
+  gripper:
+    column: u_paw2
+    open_raw_value: 0
+    closed_raw_value: 3
+    include_in_state: true
+    include_in_action: true
+
+cameras:
+  rename:
+    images_cam1_zed_left: cam_1
+    images_cam2: cam_2
+    images_cam3: cam_3
+    depth_cam2: cam_2
+    depth_cam3: cam_3
+  columns:
+    images_cam1_zed_left: image1_zed_left
+    images_cam2: image2
+    images_cam3: image3
+    depth_cam2: depth2
+    depth_cam3: depth3
+  rgb:
+    enabled: true
+    color_order: RGB
+    allow_resize: false
+    allow_crop: false
+  depth:
+    enabled: true
+    native_lerobot_depth: auto
+    save_raw_sidecar: false
+    sidecar_format: npy
+    save_video_sidecar: true
+    input_unit: mm
+    output_unit: mm
+    invalid_value: 0
+    depth_min_m: 0.01
+    depth_max_m: 10.0
+
+synchronization:
+  mode: strict
+  tolerance_ms: 5.0
+  missing_frame_policy: error
+  irregular_timestamp_policy: warn
+
+postprocess:
+  zero_velocity_dropout_repair:
+    enabled: false
+    velocity_atol: 1.0e-9
+    min_run_length: 2
+    recompute_delta_tcp_action: true
+
+sidecars:
+  raw_pressure:
+    enabled: false
+
+video:
+  encoder: h264
+  pixel_format: auto
+  validate_decode: true
+  random_validation_frames: 20
+
+statistics:
+  quantiles: [0.01, 0.10, 0.50, 0.90, 0.99]
+  compute_camera_stats: true
+  compute_depth_valid_pixel_stats: true

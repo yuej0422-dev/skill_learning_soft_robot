@@ -1,0 +1,17 @@
+dataset:
+  config: configs/dataset.synthetic.yaml
+  root: data/synthetic_soft_robot_vla
+
+policy:
+  name: smolvla
+  batch_size: 2
+  steps: 100
+  num_workers: 2
+  device: cuda
+  use_amp: true
+  freeze_vision_encoder: true
+  train_expert_only: true
+  train_state_proj: true
+  use_peft: true
+  checkpoint_dir: outputs/checkpoints/smolvla_train_16gb
+

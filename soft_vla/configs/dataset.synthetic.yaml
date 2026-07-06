@@ -1,0 +1,45 @@
+dataset:
+  source: local
+  root: data/synthetic_soft_robot_vla
+  repo_id: local/synthetic_soft_robot_vla
+  split: train
+  image_keys:
+    - observation.images.main
+    - observation.images.wrist_left
+    - observation.images.wrist_right
+  state_key: observation.state
+  action_key: action
+  task_key: task
+  fps: 10
+  episodes: 12
+  frames_per_episode: 40
+  rename_map: {}
+
+state:
+  dim: 13
+  pose_representation: rotation_vector
+  contains_gripper: true
+  gripper_index: 12
+  gripper_mode: binary_open_close
+  names:
+    - tcp_x
+    - tcp_y
+    - tcp_z
+    - tcp_rx
+    - tcp_ry
+    - tcp_rz
+    - tcp_vx
+    - tcp_vy
+    - tcp_vz
+    - tcp_wx
+    - tcp_wy
+    - tcp_wz
+    - gripper_state
+
+action:
+  dim: 7
+  is_delta_tcp: true
+  rotation_representation: rotation_vector
+  gripper_index: 6
+  gripper_mode: binary_absolute_target_position
+

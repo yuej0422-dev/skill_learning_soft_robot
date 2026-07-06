@@ -1,0 +1,12 @@
+numpy
+pillow
+pyyaml
+pandas
+pyarrow
+torch
+torchvision
+lerobot[smolvla,peft]
+transformers
+peft
+huggingface_hub
+

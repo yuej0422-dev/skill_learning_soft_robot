@@ -1,0 +1,27 @@
+dataset:
+  config: configs/dataset.real_records.yaml
+  root: data/real_robot_records_6_30_5epis_lerobot
+  episode_index: 0
+
+policy:
+  policy_type: smolvla
+  checkpoint: outputs/smolvla_real_full_finetune/checkpoints/last/pretrained_model
+  device: cuda
+
+inference:
+  checkpoint: outputs/smolvla_real_full_finetune/checkpoints/last/pretrained_model
+  source: dataset_replay
+  dry_run: true
+  hardware_enabled: false
+  output_dir: outputs/offline_inference_chunk
+
+control:
+  control_frequency_hz: 10
+  policy_frequency_hz: 10
+  maximum_steps: 40
+
+chunk_execution:
+  mode: chunk
+  chunk_size: 50
+  execution_horizon: 10
+

@@ -1,0 +1,23 @@
+name: soft_vla_cuda
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pytorch
+  - torchvision
+  - pytorch-cuda=12.4
+  - numpy
+  - pillow
+  - pyyaml
+  - pandas
+  - pyarrow
+  - pytest
+  - pip:
+      - "lerobot[smolvla,peft]"
+      - transformers
+      - peft
+      - huggingface_hub
+

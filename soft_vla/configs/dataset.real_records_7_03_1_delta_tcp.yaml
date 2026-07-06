@@ -1,0 +1,51 @@
+dataset:
+  source: local
+  root: /home/yuej/skill_learning_soft_robot/lerobot_conversion/outputs/robot_records_7_03_1_delta_tcp
+  repo_id: local/soft_robot_7_03_1_delta_tcp
+  split: train
+  video_backend: pyav
+  image_keys:
+    - observation.images.cam_1
+    - observation.images.cam_2
+    - observation.images.cam_3
+  state_key: observation.state
+  action_key: action
+  task_key: task
+  fps: 10
+  episodes: 103
+  rename_map: {}
+
+state:
+  dim: 13
+  pose_representation: rotation_vector
+  contains_gripper: true
+  gripper_index: 12
+  gripper_source: u_paw2
+  gripper_mode: binary_closed_open
+  names:
+    - x_pos1
+    - x_pos2
+    - x_pos3
+    - x_ang_radian1
+    - x_ang_radian2
+    - x_ang_radian3
+    - x_pos_vel1
+    - x_pos_vel2
+    - x_pos_vel3
+    - x_ang_radian_vel1
+    - x_ang_radian_vel2
+    - x_ang_radian_vel3
+    - gripper_open
+
+action:
+  dim: 7
+  is_delta_tcp: true
+  tcp_delta_source: next_tcp_pose_minus_current_tcp_pose
+  raw_pressure_action_used: false
+  rotation_representation: rotation_vector
+  gripper_index: 6
+  gripper_source: u_paw2
+  gripper_mode: binary_absolute_target_position
+  gripper_mapping:
+    "0": closed
+    "1": open

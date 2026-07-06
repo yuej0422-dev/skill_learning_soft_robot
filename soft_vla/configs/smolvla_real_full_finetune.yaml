@@ -1,0 +1,23 @@
+dataset:
+  config: configs/dataset.real_records.yaml
+  root: data/real_robot_records_6_30_5epis_lerobot
+
+policy:
+  name: smolvla
+  pretrained_path: lerobot/smolvla_base
+  batch_size: 1
+  steps: 30
+  gradient_accumulation_steps: 1
+  num_workers: 0
+  device: cuda
+  use_amp: true
+  freeze_vision_encoder: false
+  train_expert_only: false
+  train_state_proj: true
+  use_peft: false
+  push_to_hub: false
+  checkpoint_dir: outputs/smolvla_real_full_finetune
+  save_freq: 30
+  log_freq: 1
+  eval_freq: 0
+
