@@ -76,6 +76,7 @@ vision_to_state/lerobot_v3*/
 *.h5
 
 # Project-specific archives/releases
+md/
 soft_vla/archive/
 autodl_release/upload/
 motion_control_training/reference/KORL/dataset_orig/
