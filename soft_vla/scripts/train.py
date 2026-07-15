@@ -21,6 +21,7 @@ from soft_vla.policies.smolvla_train_utils import (
     parameter_summary,
 )
 from soft_vla.training.gripper import (
+    apply_identity_stats_for_indices,
     apply_hybrid_action_stats,
     build_transition_weights,
     smolvla_weighted_action_loss,
@@ -88,6 +89,68 @@ def write_gripper_normalization_report(path: Path, dataset_stats: dict, processo
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def parse_identity_indices(raw_cfg: dict) -> dict[str, list[int]]:
+    overrides = raw_cfg.get("normalization_overrides", {})
+    identity_indices: dict[str, list[int]] = {}
+    for feature_key, feature_cfg in overrides.items():
+        indices = feature_cfg.get("identity_indices", [])
+        if indices:
+            identity_indices[str(feature_key)] = [int(i) for i in indices]
+    return identity_indices
+
+
+def apply_image_transforms(batch: dict, raw_cfg: dict) -> dict:
+    cfg = raw_cfg.get("image_transforms", {})
+    crop_cfg = cfg.get("crop_right_fraction", {})
+    if not crop_cfg:
+        return batch
+    out = dict(batch)
+    for key, fraction in crop_cfg.items():
+        if key not in out:
+            continue
+        value = out[key]
+        if not hasattr(value, "shape") or value.ndim < 4:
+            continue
+        width = int(value.shape[-1])
+        keep_width = int(round(width * (1.0 - float(fraction))))
+        if keep_width <= 0 or keep_width > width:
+            raise ValueError(f"Invalid crop_right_fraction={fraction} for {key} width={width}")
+        out[key] = value[..., :keep_width].contiguous()
+    return out
+
+
+def write_mixed_normalization_report(path: Path, dataset_stats: dict, processor_stats: dict, identity_indices: dict[str, list[int]], first_report: dict) -> None:
+    lines = [
+        "# Mixed Normalization Report",
+        "",
+        "- Non-identity dimensions keep dataset mean/std normalization.",
+        "- Configured identity dimensions use processor mean=0/std=1.",
+        f"- Identity indices: `{identity_indices}`",
+        f"- First processed state shape: `{first_report.get('processed_state_shape')}`",
+        f"- First processed action shape: `{first_report.get('processed_action_shape')}`",
+        "",
+    ]
+    for feature_key, indices in identity_indices.items():
+        original = dataset_stats[feature_key]
+        patched = processor_stats[feature_key]
+        original_mean = [float(original["mean"][i]) for i in indices]
+        original_std = [float(original["std"][i]) for i in indices]
+        patched_mean = [float(patched["mean"][i]) for i in indices]
+        patched_std = [float(patched["std"][i]) for i in indices]
+        lines.extend(
+            [
+                f"## {feature_key}",
+                "",
+                f"- Original mean at identity indices: `{original_mean}`",
+                f"- Original std at identity indices: `{original_std}`",
+                f"- Processor mean at identity indices: `{patched_mean}`",
+                f"- Processor std at identity indices: `{patched_std}`",
+                "",
+            ]
+        )
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
@@ -110,18 +173,27 @@ def main() -> int:
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
 
     command = f"{Path(__file__).name} --config {args.config} --overwrite"
-    (PROJECT_ROOT / "reports" / "actual_training_command.txt").write_text(command + "\n", encoding="utf-8")
+    write_shared_reports = bool(raw_cfg.get("reports", {}).get("update_shared", True))
+    (cfg.output_dir / "actual_training_command.txt").write_text(command + "\n", encoding="utf-8")
+    if write_shared_reports:
+        (PROJECT_ROOT / "reports" / "actual_training_command.txt").write_text(command + "\n", encoding="utf-8")
 
     dataset = make_dataset(cfg)
     policy = make_policy(cfg.policy, ds_meta=dataset.meta, rename_map=cfg.rename_map)
     if cfg.peft is not None:
         policy = policy.wrap_with_peft(peft_cli_overrides=cfg.peft.__dict__)
+    identity_indices = parse_identity_indices(raw_cfg)
     action_norm_cfg = raw_cfg.get("action_normalization", {})
     use_hybrid_action_norm = (
         str(action_norm_cfg.get("gripper_mode", "")).lower() == "identity"
         or str(action_norm_cfg.get("gripper", {}).get("mode", "")).lower() == "identity"
     )
-    processor_stats = apply_hybrid_action_stats(dataset.meta.stats) if use_hybrid_action_norm else dataset.meta.stats
+    if identity_indices:
+        processor_stats = apply_identity_stats_for_indices(dataset.meta.stats, identity_indices)
+    elif use_hybrid_action_norm:
+        processor_stats = apply_hybrid_action_stats(dataset.meta.stats)
+    else:
+        processor_stats = dataset.meta.stats
 
     preprocessor, postprocessor = make_pre_post_processors(
         policy_cfg=cfg.policy,
@@ -184,6 +256,7 @@ def main() -> int:
     dl_iter = cycle(loader)
 
     raw_first = next(iter(torch.utils.data.DataLoader(dataset, batch_size=1, num_workers=0, shuffle=False)))
+    raw_first = apply_image_transforms(raw_first, raw_cfg)
     processed_first = preprocessor(raw_first)
     raw_processed_report = {
         "raw_batch_keys": list(raw_first.keys()),
@@ -201,7 +274,15 @@ def main() -> int:
         "processed_device": str(processed_first["observation.state"].device),
     }
     (cfg.output_dir / "first_batch_report.json").write_text(json.dumps(jsonable(raw_processed_report), indent=2), encoding="utf-8")
-    if use_hybrid_action_norm:
+    if identity_indices:
+        write_mixed_normalization_report(
+            PROJECT_ROOT / "reports" / "mixed_normalization_report.md",
+            dataset.meta.stats,
+            processor_stats,
+            identity_indices,
+            raw_processed_report,
+        )
+    elif use_hybrid_action_norm:
         write_gripper_normalization_report(
             PROJECT_ROOT / "reports" / "gripper_normalization_report.md",
             dataset.meta.stats,
@@ -241,6 +322,7 @@ def main() -> int:
         if "action" in raw_batch:
             sampled_gripper.extend(to_numpy(raw_batch["action"])[:, 0, 6].reshape(-1).astype(float).tolist())
         t_pre = time.perf_counter()
+        raw_batch = apply_image_transforms(raw_batch, raw_cfg)
         batch = preprocessor(raw_batch)
         t_forward = time.perf_counter()
         with torch.amp.autocast("cuda", enabled=bool(cfg.policy.use_amp)):
@@ -343,7 +425,7 @@ def main() -> int:
             json.dumps({"raw": jsonable(sampler_report), "sampled": sampled_report}, indent=2),
             encoding="utf-8",
         )
-    (reports / "weight_update_verification.md").write_text(
+    weight_report_text = (
         "# Weight Update Verification\n\n"
         f"- Parameter: `{param_name}`\n"
         f"- Checksum before: `{weight_report['checksum_before']}`\n"
@@ -351,9 +433,11 @@ def main() -> int:
         f"- Norm before: `{weight_report['norm_before']}`\n"
         f"- Norm after: `{weight_report['norm_after']}`\n"
         f"- Max absolute difference: `{weight_report['max_abs_difference']}`\n"
-        f"- Updated: `{weight_report['updated']}`\n",
-        encoding="utf-8",
+        f"- Updated: `{weight_report['updated']}`\n"
     )
+    (cfg.output_dir / "weight_update_verification.md").write_text(weight_report_text, encoding="utf-8")
+    if write_shared_reports:
+        (reports / "weight_update_verification.md").write_text(weight_report_text, encoding="utf-8")
     print(json.dumps(jsonable(summary), indent=2)[:4000])
     return 0 if weight_report["updated"] else 1
 

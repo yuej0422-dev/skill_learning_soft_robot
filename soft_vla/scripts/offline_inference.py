@@ -13,10 +13,46 @@ PROJECT_ROOT = add_src_to_path()
 
 from soft_vla.config import load_yaml
 from soft_vla.data.replay_source import LeRobotReplaySource
-from soft_vla.hardware.null_controller import NullRobotController
-from soft_vla.hardware.safety_filter import SafetyFilter
 from soft_vla.inference.runner import run_offline_inference
-from soft_vla.schemas import validate_action
+
+
+def apply_image_transforms(batch: dict, cfg: dict) -> dict:
+    transforms = cfg.get("image_transforms", {})
+    crop_cfg = transforms.get("crop_right_fraction", {})
+    if not crop_cfg:
+        return batch
+    out = dict(batch)
+    for key, fraction in crop_cfg.items():
+        if key not in out:
+            continue
+        value = out[key]
+        if not hasattr(value, "shape") or value.ndim < 3:
+            continue
+        width = int(value.shape[-1])
+        keep_width = int(round(width * (1.0 - float(fraction))))
+        if keep_width <= 0 or keep_width > width:
+            raise ValueError(f"Invalid crop_right_fraction={fraction} for {key} width={width}")
+        out[key] = value[..., :keep_width].contiguous()
+    return out
+
+
+def validate_vector(value, name: str) -> np.ndarray:
+    arr = np.asarray(value, dtype=np.float32)
+    if arr.ndim == 0:
+        raise ValueError(f"{name} must have a trailing dimension.")
+    if not np.all(np.isfinite(arr)):
+        raise ValueError(f"{name} contains NaN or Inf.")
+    return arr
+
+
+def dry_run_safety_filter(action: np.ndarray) -> np.ndarray:
+    arr = validate_vector(action, "predicted action").copy()
+    if arr.shape[-1] >= 6:
+        arr[..., :3] = np.clip(arr[..., :3], -0.02, 0.02)
+        arr[..., 3:6] = np.clip(arr[..., 3:6], -0.08, 0.08)
+    if arr.shape[-1] >= 7:
+        arr[..., 6] = np.where(arr[..., 6] >= 0.5, 1.0, 0.0)
+    return arr.astype(np.float32)
 
 
 def main() -> int:
@@ -66,9 +102,8 @@ def main() -> int:
         pretrained_path=str(checkpoint),
         preprocessor_overrides={"device_processor": {"device": device}},
     )
-    controller = NullRobotController()
-    safety_filter = SafetyFilter()
     max_frames = cfg["inference"].get("max_frames")
+    use_safety_filter = bool(cfg["inference"].get("safety_filter", True))
     records = []
     latencies = []
     errors = []
@@ -80,12 +115,18 @@ def main() -> int:
     for i, sample in enumerate(source):
         if max_frames is not None and i >= max_frames:
             break
-        gt = validate_action(np.asarray(sample["action"], dtype=np.float32))
+        gt = validate_vector(sample["action"], "ground-truth action")
         obs = {k: v for k, v in sample.items() if k != "action" and k != "action_is_pad"}
+        obs = apply_image_transforms(obs, cfg)
         if first_raw is None:
             first_raw = {
                 "keys": list(obs.keys()),
                 "state": np.asarray(obs["observation.state"]).tolist(),
+                "image_shapes": {
+                    k: list(v.shape)
+                    for k, v in obs.items()
+                    if k.startswith("observation.images") and hasattr(v, "shape")
+                },
                 "task": str(obs.get("task")),
             }
         t0 = torch.cuda.Event(enable_timing=True)
@@ -110,8 +151,10 @@ def main() -> int:
         torch.cuda.synchronize()
         latency_ms = float(t0.elapsed_time(t1))
         pred = raw_chunk[0, 0].numpy().astype(np.float32)
-        pred = safety_filter.filter_action(pred)
-        controller.send_action(pred)
+        if use_safety_filter:
+            pred = dry_run_safety_filter(pred)
+        if pred.shape != gt.shape:
+            raise ValueError(f"predicted action shape {pred.shape} does not match ground-truth shape {gt.shape}")
         err = pred - gt
         latencies.append(latency_ms)
         errors.append(err)
@@ -121,6 +164,8 @@ def main() -> int:
             {
                 "frame": i,
                 "latency_ms": latency_ms,
+                "pred_action_shape": list(pred.shape),
+                "gt_action_shape": list(gt.shape),
                 "pred_action": pred.tolist(),
                 "gt_action": gt.tolist(),
                 "abs_error": np.abs(err).tolist(),
@@ -133,8 +178,8 @@ def main() -> int:
         "episode_index": cfg["dataset"].get("episode_index"),
         "frames": len(records),
         "action_chunk_shape": list(first_chunk.shape) if first_chunk is not None else None,
-        "raw_action_shape": [7],
-        "gt_action_shape": [7],
+        "raw_action_shape": list(records[0]["pred_action_shape"]) if records else None,
+        "gt_action_shape": list(records[0]["gt_action_shape"]) if records else None,
         "mean_latency_ms": float(np.mean(latencies)) if latencies else 0.0,
         "median_latency_ms": float(np.median(latencies)) if latencies else 0.0,
         "p90_latency_ms": float(np.percentile(latencies, 90)) if latencies else 0.0,
@@ -143,7 +188,8 @@ def main() -> int:
         "overall_mae": float(np.mean(np.abs(err_arr))) if len(err_arr) else 0.0,
         "overall_rmse": float(np.sqrt(np.mean(err_arr**2))) if len(err_arr) else 0.0,
         "per_dimension_mae": np.mean(np.abs(err_arr), axis=0).tolist() if len(err_arr) else [],
-        "gripper_prediction_values": sorted(set(float(r["pred_action"][6]) for r in records)),
+        "gripper_prediction_values": sorted(set(float(r["pred_action"][6]) for r in records)) if records and len(records[0]["pred_action"]) > 6 else [],
+        "safety_filter": use_safety_filter,
         "dry_run": True,
     }
     (out_dir / "records.json").write_text(json.dumps(records, indent=2), encoding="utf-8")
@@ -167,7 +213,7 @@ def main() -> int:
         f"- Overall RMSE: `{summary['overall_rmse']}`\n"
         f"- Per-dimension MAE: `{summary['per_dimension_mae']}`\n"
         f"- Gripper prediction values after safety filter: `{summary['gripper_prediction_values']}`\n"
-        "\nThis is offline action fitting error on synthetic data, not real task success rate.\n",
+        "\nThis is offline action fitting error on replay data, not real task success rate.\n",
         encoding="utf-8",
     )
     print(json.dumps(summary, indent=2))

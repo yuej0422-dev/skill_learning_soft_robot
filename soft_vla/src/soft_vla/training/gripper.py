@@ -46,6 +46,29 @@ def apply_hybrid_action_stats(stats: dict[str, Any], *, gripper_index: int = GRI
     return patched
 
 
+def apply_identity_stats_for_indices(stats: dict[str, Any], identity_indices: dict[str, list[int]]) -> dict[str, Any]:
+    """Patch mean/std stats so selected vector dimensions pass through unchanged.
+
+    LeRobot normalizers apply one normalization mode to a whole feature vector.
+    For mixed continuous/binary vectors, setting mean=0 and std=1 for selected
+    dimensions keeps those dimensions in identity form while preserving mean/std
+    normalization for the remaining dimensions.
+    """
+    patched = copy.deepcopy(stats)
+    for feature_key, indices in identity_indices.items():
+        feature_stats = patched.get(feature_key)
+        if not isinstance(feature_stats, dict):
+            raise KeyError(f"stats must contain {feature_key} statistics")
+        for stat_key, value in {"mean": 0.0, "std": 1.0}.items():
+            arr = list(feature_stats[stat_key])
+            for idx in indices:
+                if idx >= len(arr):
+                    raise IndexError(f"{feature_key}.{stat_key} index {idx} out of range for length {len(arr)}")
+                arr[idx] = value
+            feature_stats[stat_key] = arr
+    return patched
+
+
 def extract_dataset_arrays(dataset) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     hf_dataset = getattr(dataset, "hf_dataset", None)
     if hf_dataset is not None:
