@@ -28,9 +28,6 @@ from soft_vla.motion_control.feedback_controllers import (
 from soft_vla.motion_control.fulla_history_adapters import (
     FullAHistoryKoopmanAdapter,
     FullAHistoryKoopmanConfig,
-    PhysicalBarFeedbackAdapter,
-    PhysicalBarPressureConfig,
-    PhysicalBarPressureMLPAdapter,
 )
 from soft_vla.motion_control.koopman_adapter import KoopmanAdapter, KoopmanAdapterConfig
 from soft_vla.motion_control.reference_generator import ReferenceGenerator, ReferenceGeneratorConfig
@@ -126,12 +123,6 @@ def main() -> None:
     parser.add_argument("--feedforward", choices=["pressure_model", "awac"], default="pressure_model")
     parser.add_argument("--feedback", choices=["integral_lqr", "fixed_k_integral"], default="integral_lqr")
     parser.add_argument(
-        "--pressure-output-units",
-        choices=["normalized", "physical_bar"],
-        default="normalized",
-        help="Unit contract of the pressure-model checkpoint; existing deployments default to normalized.",
-    )
-    parser.add_argument(
         "--koopman-architecture",
         choices=["legacy", "fullA_history_v2"],
         default="legacy",
@@ -187,18 +178,13 @@ def main() -> None:
         )
 
     if args.feedforward == "pressure_model":
-        if args.pressure_output_units == "physical_bar":
-            feedforward = PhysicalBarPressureMLPAdapter(
-                PhysicalBarPressureConfig(checkpoint=args.pressure_checkpoint, device=args.device)
+        feedforward = FeedforwardPressureMLPAdapter(
+            FeedforwardPressureConfig(
+                checkpoint=args.pressure_checkpoint,
+                device=args.device,
+                input_mode="target_state",
             )
-        else:
-            feedforward = FeedforwardPressureMLPAdapter(
-                FeedforwardPressureConfig(
-                    checkpoint=args.pressure_checkpoint,
-                    device=args.device,
-                    input_mode="target_state",
-                )
-            )
+        )
     else:
         feedforward = AwacFeedforwardAdapter(AwacFeedforwardConfig(checkpoint=args.awac_checkpoint, device=args.device))
 
@@ -225,10 +211,6 @@ def main() -> None:
         q_integral_weight=args.q_integral_weight,
         r_weight=args.r_weight,
     )
-    if isinstance(koopman, FullAHistoryKoopmanAdapter):
-        # Full-A B was trained with raw pressure in bar.  Convert its LQR
-        # correction to the normalized pressure contract used by the runtime.
-        feedback = PhysicalBarFeedbackAdapter(feedback, physical_pressure_max=3.0)
     runtime = MotionControlRuntime(
         feedforward=feedforward,
         feedback=feedback,
@@ -292,7 +274,9 @@ def main() -> None:
                 )
                 writes += driver.send_physical(cmd.final_physical)
                 if isinstance(koopman, FullAHistoryKoopmanAdapter):
-                    koopman.record_control(cmd.motion_physical12)
+                    # Koopman was trained with u_p1..u_p12 in the normalized
+                    # controller scale, before the hardware-only x3 conversion.
+                    koopman.record_control(cmd.motion_norm12)
                 timing.add_ns(time.monotonic_ns() - t0)
                 control_steps += 1
                 safety_flags.update(cmd.safety_flags)
@@ -352,14 +336,10 @@ def main() -> None:
         "target_source": "lerobot_observation_state_plus_lerobot_action_delta",
         "closed_loop_state_source": "mock_perfect_tracking" if args.mock else "lumo_measured_state",
         "feedforward": args.feedforward,
-        "pressure_output_units": args.pressure_output_units,
+        "pressure_model_output_units": "normalized_0_1",
         "pressure_checkpoint": str(args.pressure_checkpoint),
         "feedback": args.feedback,
-        "feedback_output_units": (
-            "physical_bar_converted_to_normalized"
-            if args.koopman_architecture == "fullA_history_v2"
-            else "legacy_normalized_contract"
-        ),
+        "feedback_output_units": "normalized_0_1",
         "koopman_architecture": args.koopman_architecture,
         "koopman_checkpoint": str(args.koopman_checkpoint),
         "koopman_history_steps": getattr(koopman, "history_steps", None),

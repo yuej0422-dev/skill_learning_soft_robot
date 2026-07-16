@@ -7,62 +7,10 @@ import numpy as np
 
 
 @dataclass(frozen=True)
-class PhysicalBarPressureConfig:
-    checkpoint: str | Path
-    device: str = "cpu"
-    physical_pressure_max: float = 3.0
-
-
-class PhysicalBarPressureMLPAdapter:
-    """Adapt a raw-pressure MLP to the runtime's normalized pressure contract.
-
-    The feedforward model is trained directly against ``raw_pressure`` in bar,
-    while ``MotionControlRuntime`` expects a value in [0, 1] before converting
-    it back to physical pressure.  This adapter performs that unit conversion
-    explicitly instead of treating bar values as normalized values.
-    """
-
-    def __init__(self, config: PhysicalBarPressureConfig) -> None:
-        if float(config.physical_pressure_max) <= 0:
-            raise ValueError("physical_pressure_max must be positive")
-        self.config = config
-        self.policy = _load_pressure_mlp(config.checkpoint, device=config.device)
-
-    def predict(
-        self,
-        *,
-        current_state12: np.ndarray,
-        reference_state12: np.ndarray,
-        delta_tcp6: np.ndarray,
-    ) -> np.ndarray:
-        del current_state12, delta_tcp6
-        physical_bar = np.asarray(self.policy.predict_pressure(reference_state12), dtype=np.float32).reshape(12)
-        physical_bar = np.clip(physical_bar, 0.0, float(self.config.physical_pressure_max))
-        return (physical_bar / float(self.config.physical_pressure_max)).astype(np.float32)
-
-
-class PhysicalBarFeedbackAdapter:
-    """Convert a model-space feedback command in bar to normalized pressure."""
-
-    def __init__(self, controller, *, physical_pressure_max: float = 3.0) -> None:
-        if float(physical_pressure_max) <= 0:
-            raise ValueError("physical_pressure_max must be positive")
-        self.controller = controller
-        self.physical_pressure_max = float(physical_pressure_max)
-
-    def reset(self) -> None:
-        self.controller.reset()
-
-    def predict(self, lifted_error: np.ndarray) -> np.ndarray:
-        physical_bar = np.asarray(self.controller.predict(lifted_error), dtype=np.float32)
-        return (physical_bar / self.physical_pressure_max).astype(np.float32)
-
-
-@dataclass(frozen=True)
 class FullAHistoryKoopmanConfig:
     checkpoint: str | Path
     device: str = "cpu"
-    initial_pressure_bar: float = 0.0
+    initial_pressure_norm: float = 0.0
 
 
 class FullAHistoryKoopmanAdapter:
@@ -70,9 +18,12 @@ class FullAHistoryKoopmanAdapter:
 
     Training context at control step t is
     ``[x[t-h+1:t+1], u[t-h:t]]``.  The adapter maintains separate measured and
-    reference state histories and a shared history of the pressures that were
-    actually sent to the robot.  Sharing the action history makes the lifted
-    error represent the state/reference difference under identical past input.
+    reference state histories and a shared history of the normalized 12-channel
+    pressure commands that were actually applied.  Although the dataset field
+    is named ``raw_pressure``, u_p1..u_p12 are already in the controller's
+    [0, 1] scale and were not statistically normalized during training.
+    Sharing the action history makes the lifted error represent the
+    state/reference difference under identical past input.
     """
 
     def __init__(self, config: FullAHistoryKoopmanConfig) -> None:
@@ -138,7 +89,9 @@ class FullAHistoryKoopmanAdapter:
     ) -> None:
         self._measured_history: list[np.ndarray] = []
         self._reference_history: list[np.ndarray] = []
-        initial_pressure = np.full((self.u_dim,), float(self.config.initial_pressure_bar), dtype=np.float32)
+        initial_pressure = np.full((self.u_dim,), float(self.config.initial_pressure_norm), dtype=np.float32)
+        if np.any(initial_pressure < 0.0) or np.any(initial_pressure > 1.0):
+            raise ValueError("initial_pressure_norm must be in [0, 1]")
         self._pressure_history: list[np.ndarray] = [initial_pressure.copy() for _ in range(self.history_steps)]
         self._awaiting_control = False
         if current_state12 is not None:
@@ -166,12 +119,14 @@ class FullAHistoryKoopmanAdapter:
         self._awaiting_control = True
         return measured_lift - reference_lift
 
-    def record_control(self, physical_pressure12: np.ndarray) -> None:
+    def record_control(self, normalized_pressure12: np.ndarray) -> None:
         if not self._awaiting_control:
             raise RuntimeError("tracking_error() must be called before record_control()")
-        pressure = np.asarray(physical_pressure12, dtype=np.float32).reshape(self.u_dim)
+        pressure = np.asarray(normalized_pressure12, dtype=np.float32).reshape(self.u_dim)
         if not np.all(np.isfinite(pressure)):
-            raise ValueError("physical pressure history contains NaN or Inf")
+            raise ValueError("normalized pressure history contains NaN or Inf")
+        if np.any(pressure < 0.0) or np.any(pressure > 1.0):
+            raise ValueError("normalized pressure history must be in [0, 1]")
         self._append_bounded(self._pressure_history, pressure)
         self._awaiting_control = False
 
@@ -188,7 +143,7 @@ class FullAHistoryKoopmanAdapter:
         return {
             "measured_state": np.stack(self._measured_history) if self._measured_history else np.empty((0, 12)),
             "reference_state": np.stack(self._reference_history) if self._reference_history else np.empty((0, 12)),
-            "physical_pressure": np.stack(self._pressure_history),
+            "normalized_pressure": np.stack(self._pressure_history),
         }
 
     def _lift_from_history(self, state_history: list[np.ndarray], current_state: np.ndarray) -> np.ndarray:
@@ -217,11 +172,3 @@ class FullAHistoryKoopmanAdapter:
         if not np.all(np.isfinite(state)):
             raise ValueError("state history contains NaN or Inf")
         return state
-
-
-def _load_pressure_mlp(checkpoint: str | Path, *, device: str):
-    try:
-        from motion_control_training.feedforward_pressure.infer_pressure import load_policy
-    except ImportError as exc:  # pragma: no cover - depends on repository environment
-        raise RuntimeError("cannot import feedforward pressure loader") from exc
-    return load_policy(checkpoint, device=device)

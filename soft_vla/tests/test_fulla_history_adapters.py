@@ -8,10 +8,8 @@ import numpy as np
 from soft_vla.motion_control.fulla_history_adapters import (
     FullAHistoryKoopmanAdapter,
     FullAHistoryKoopmanConfig,
-    PhysicalBarFeedbackAdapter,
-    PhysicalBarPressureConfig,
-    PhysicalBarPressureMLPAdapter,
 )
+from soft_vla.motion_control.feedforward_adapters import FeedforwardPressureConfig, FeedforwardPressureMLPAdapter
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -45,14 +43,14 @@ class FullAHistoryDeploymentAdapterTest(unittest.TestCase):
         np.testing.assert_allclose(error, np.zeros(24), atol=1e-7)
         self.koopman.record_control(np.zeros(12, dtype=np.float32))
 
-    def test_actual_physical_pressure_is_recorded_in_history(self):
+    def test_actual_normalized_pressure_is_recorded_in_history(self):
         state = self.koopman.state_mean.copy()
         self.koopman.tracking_error(state, state)
-        pressure = np.linspace(0.0, 3.0, 12, dtype=np.float32)
+        pressure = np.linspace(0.0, 0.9, 12, dtype=np.float32)
         self.koopman.record_control(pressure)
         snapshot = self.koopman.history_snapshot()
-        np.testing.assert_allclose(snapshot["physical_pressure"][-1], pressure)
-        self.assertEqual(snapshot["physical_pressure"].shape, (10, 12))
+        np.testing.assert_allclose(snapshot["normalized_pressure"][-1], pressure)
+        self.assertEqual(snapshot["normalized_pressure"].shape, (10, 12))
 
     def test_requires_one_control_per_tracking_step(self):
         state = self.koopman.state_mean.copy()
@@ -61,9 +59,9 @@ class FullAHistoryDeploymentAdapterTest(unittest.TestCase):
             self.koopman.tracking_error(state, state)
         self.koopman.record_control(np.zeros(12, dtype=np.float32))
 
-    def test_physical_bar_feedforward_converts_to_normalized_pressure(self):
-        adapter = PhysicalBarPressureMLPAdapter(
-            PhysicalBarPressureConfig(checkpoint=PRESSURE_CHECKPOINT, device="cpu")
+    def test_feedforward_checkpoint_outputs_normalized_pressure(self):
+        adapter = FeedforwardPressureMLPAdapter(
+            FeedforwardPressureConfig(checkpoint=PRESSURE_CHECKPOINT, device="cpu", input_mode="target_state")
         )
         reference = np.asarray(
             [0.060958, 0.648326, 0.072231, 0.059275, 0.019778, 0.013621] + [0.0] * 6,
@@ -78,18 +76,11 @@ class FullAHistoryDeploymentAdapterTest(unittest.TestCase):
         self.assertTrue(np.all(prediction >= 0.0))
         self.assertTrue(np.all(prediction <= 1.0))
 
-    def test_physical_bar_feedback_converts_to_normalized_pressure(self):
-        class StubController:
-            def reset(self):
-                pass
-
-            def predict(self, lifted_error):
-                del lifted_error
-                return np.full(12, 1.5, dtype=np.float32)
-
-        adapter = PhysicalBarFeedbackAdapter(StubController(), physical_pressure_max=3.0)
-        prediction = adapter.predict(np.zeros(24, dtype=np.float64))
-        np.testing.assert_allclose(prediction, np.full(12, 0.5, dtype=np.float32))
+    def test_rejects_physical_bar_values_in_koopman_history(self):
+        state = self.koopman.state_mean.copy()
+        self.koopman.tracking_error(state, state)
+        with self.assertRaises(ValueError):
+            self.koopman.record_control(np.full(12, 3.0, dtype=np.float32))
 
 
 if __name__ == "__main__":
