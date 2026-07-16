@@ -32,7 +32,27 @@ class ReferenceGeneratorTest(unittest.TestCase):
         self.assertAlmostEqual(float(segment.reference_states12[-1, 0]), 0.01)
         self.assertAlmostEqual(float(segment.reference_states12[-1, 3]), 0.1)
 
+    def test_slow_target_frequencies_keep_50hz_control(self):
+        action = UpperAction(
+            delta_tcp6=np.asarray([0.01, 0, 0, 0, 0, 0], dtype=np.float32),
+            gripper_open=1,
+            upper_step=0,
+        )
+        for target_frequency, expected_substeps in [(10.0, 5), (1.0, 50), (0.1, 500)]:
+            with self.subTest(target_frequency=target_frequency):
+                gen = ReferenceGenerator(
+                    ReferenceGeneratorConfig(
+                        upper_frequency_hz=target_frequency,
+                        control_frequency_hz=50.0,
+                        delta_tcp_scale=1.0,
+                        max_delta_tcp=None,
+                    )
+                )
+                segment = gen.build(current_state12=np.zeros(12, dtype=np.float32), action=action)
+                self.assertEqual(segment.reference_states12.shape, (expected_substeps, 12))
+                self.assertAlmostEqual(float(segment.reference_states12[-1, 0]), 0.01)
+                self.assertAlmostEqual(float(segment.reference_states12[0, 6]), 0.01 * target_frequency)
+
 
 if __name__ == "__main__":
     unittest.main()
-

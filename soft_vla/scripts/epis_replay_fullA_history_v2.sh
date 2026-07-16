@@ -10,6 +10,10 @@ export LD_LIBRARY_PATH="/home/cao/miniconda3/envs/soft_vla_cuda/lib:${LD_LIBRARY
 #
 # 默认会连接真实 LuMo 与压力串口；先做离线接线验证时可运行：
 #   HARDWARE_ENABLED=0 MAX_FRAMES=2 bash soft_vla/scripts/epis_replay_fullA_history_v2.sh
+# 上层每1秒发送一个target、总共发送3次：
+#   TARGET_FREQUENCY=1 MAX_FRAMES=3 bash soft_vla/scripts/epis_replay_fullA_history_v2.sh
+# 上层每10秒发送一个target、总共发送2次：
+#   TARGET_FREQUENCY=0.1 MAX_FRAMES=2 bash soft_vla/scripts/epis_replay_fullA_history_v2.sh
 # 实物小段验证：
 #   MAX_FRAMES=2 PRESSURE_SCALE=0.2 bash soft_vla/scripts/epis_replay_fullA_history_v2.sh
 # 离线生成临时固定 K 后回放：
@@ -25,7 +29,7 @@ FEEDBACK=${FEEDBACK:-integral_lqr}  # integral_lqr / fixed_k_integral
 RUN_LABEL=${RUN_LABEL:-"pressure_tcp6_fullA_history_v2_${FEEDBACK}"}
 OUTPUT_DIR=${OUTPUT_DIR:-"$ROOT/soft_vla/tests/tmp/$RUN_LABEL"}
 EPISODE_INDEX=${EPISODE_INDEX:-0}
-MAX_FRAMES=${MAX_FRAMES:-0}
+MAX_FRAMES=${MAX_FRAMES:-0}               # target-state发送次数；<=0表示整个episode
 LOG_JSONL=${LOG_JSONL:-"$OUTPUT_DIR/replay_real_ep${EPISODE_INDEX}.jsonl"}
 PLOT_PATH=${PLOT_PATH:-"$OUTPUT_DIR/replay_real_ep${EPISODE_INDEX}.png"}
 SUMMARY_PATH=${SUMMARY_PATH:-"$OUTPUT_DIR/replay_real_ep${EPISODE_INDEX}_summary.json"}
@@ -38,6 +42,7 @@ RIGID_BODY_ID=${RIGID_BODY_ID:-1}
 
 # 模型训练频率为 50 Hz；适配器会拒绝频率不一致的部署。
 FREQUENCY=${FREQUENCY:-50}
+TARGET_FREQUENCY=${TARGET_FREQUENCY:-10}  # 上层target-state频率：10 / 1 / 0.1 Hz
 DELTA_TCP_SCALE=${DELTA_TCP_SCALE:-1}
 PRESSURE_SCALE=${PRESSURE_SCALE:-1}
 FEEDBACK_GAIN_SCALE=${FEEDBACK_GAIN_SCALE:-0.1}
@@ -108,6 +113,7 @@ args=(
   --q-integral-weight "$Q_INTEGRAL_WEIGHT"
   --r-weight "$R_WEIGHT"
   --frequency "$FREQUENCY"
+  --target-frequency "$TARGET_FREQUENCY"
   --device "$DEVICE"
   --log-jsonl "$LOG_JSONL"
   --plot-path "$PLOT_PATH"

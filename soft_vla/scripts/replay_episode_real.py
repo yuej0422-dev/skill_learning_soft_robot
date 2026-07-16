@@ -114,7 +114,12 @@ def main() -> None:
     parser.add_argument("--hardware-enabled", action="store_true")
     parser.add_argument("--dataset-root", type=Path, default=Path("lerobot_conversion/outputs/robot_records_7_03_1_delta_tcp"))
     parser.add_argument("--episode-index", type=int, default=0)
-    parser.add_argument("--max-frames", type=int, default=20, help="Number of 10 Hz episode frames to replay; <=0 replays the full episode.")
+    parser.add_argument(
+        "--max-frames",
+        type=int,
+        default=20,
+        help="Maximum number of target-state updates to send; <=0 sends the full episode.",
+    )
     parser.add_argument("--ip", default="192.168.140.1")
     parser.add_argument("--rigid-body-id", type=int, default=1)
     parser.add_argument("--port", default="COM3")
@@ -147,6 +152,12 @@ def main() -> None:
     parser.add_argument("--q-integral-weight", type=float, default=0.5)
     parser.add_argument("--r-weight", type=float, default=10.0)
     parser.add_argument("--frequency", type=float, default=50.0)
+    parser.add_argument(
+        "--target-frequency",
+        type=float,
+        default=10.0,
+        help="Upper target-state update frequency in Hz, e.g. 10, 1, or 0.1.",
+    )
     parser.add_argument("--log-jsonl", type=Path, default=None)
     parser.add_argument("--plot-path", type=Path, default=None)
     parser.add_argument("--output-summary", type=Path, default=None)
@@ -160,6 +171,8 @@ def main() -> None:
         raise SystemExit("--pressure-scale must be in [0, 1] for small-amplitude real replay.")
     if args.feedback_gain_scale < 0 or args.feedback_gain_scale > 1.0:
         raise SystemExit("--feedback-gain-scale must be in [0, 1] for real replay.")
+    if args.target_frequency <= 0:
+        raise SystemExit("--target-frequency must be positive.")
 
     rows = load_episode(args.dataset_root, args.episode_index)
     if not rows:
@@ -218,7 +231,7 @@ def main() -> None:
     )
     ref_gen = ReferenceGenerator(
         ReferenceGeneratorConfig(
-            upper_frequency_hz=10.0,
+            upper_frequency_hz=args.target_frequency,
             control_frequency_hz=args.frequency,
             delta_tcp_scale=args.delta_tcp_scale,
         )
@@ -291,6 +304,7 @@ def main() -> None:
                         {
                             "upper_step": upper_step,
                             "substep": substep,
+                            "target_frequency_hz": args.target_frequency,
                             "frame_index": row["frame_index"],
                             "dataset_timestamp": row["timestamp"],
                             "dataset_base_state": dataset_base_state12.tolist(),
@@ -336,6 +350,11 @@ def main() -> None:
         "mode": "mock" if args.mock else "hardware",
         "episode_index": args.episode_index,
         "upper_frames": len(rows),
+        "target_state_updates": len(rows),
+        "target_frequency_hz": args.target_frequency,
+        "control_frequency_hz": args.frequency,
+        "control_steps_per_target": ref_gen.substeps,
+        "planned_duration_s": len(rows) / args.target_frequency,
         "control_steps": control_steps,
         "target_source": "lerobot_observation_state_plus_lerobot_action_delta",
         "closed_loop_state_source": "mock_perfect_tracking" if args.mock else "lumo_measured_state",
