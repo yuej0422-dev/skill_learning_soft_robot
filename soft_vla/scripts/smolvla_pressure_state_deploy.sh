@@ -1,40 +1,45 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# SmolVLA pressure-state (25D state / 19D action) deployment entry.
-# This is intentionally separate from smolvla_deploy.sh.
+# SmolVLA pressure-state 四进程部署入口；与原 smolvla_deploy.sh 相互独立，不覆盖原部署流程。
+# 常用方式：
+#   1) 纯 mock，不加载 VLA 权重和硬件：DEVICE=cpu DURATION_S=2 bash soft_vla/scripts/smolvla_pressure_state_deploy.sh
+#   2) 1w 真实模型 + replay 图像 + mock IO：VLA_BACKEND=smolvla bash soft_vla/scripts/smolvla_pressure_state_deploy.sh
+#   3) 1w 真实模型 + 三相机 + 动捕 + mock 压力：STATE_HARDWARE=1 VLA_BACKEND=smolvla LIVE_OBSERVATION=1 CAMERA_PREVIEW=1 bash soft_vla/scripts/smolvla_pressure_state_deploy.sh
+#   4) 完整实物控制：RUN_HARDWARE=1 VLA_BACKEND=smolvla LIVE_OBSERVATION=1 CAMERA_PREVIEW=1 PRESSURE_DELTA_SCALE=0.2 DURATION_S=5 bash soft_vla/scripts/smolvla_pressure_state_deploy.sh
 #
-# Data flow at every upper-frequency tick (default 10 Hz):
-#   state25 = [state12, gripper, current_normalized_pressure12]
-#   action19 = [delta_tcp6, gripper, delta_pressure12]
-#   VLA feedforward = clip(current_normalized_pressure12 + delta_pressure12, 0, 1)
-# The target state and VLA feedforward are held for all 50 Hz lower-control ticks;
-# only the Koopman feedback correction is refreshed at 50 Hz.
+# pressure-state 数据约定：
+#   state25  = [12D 运动状态, 1D 夹爪状态, 当前12D归一化气压]
+#   action19 = [6D delta TCP, 1D二值夹爪动作, 12D气压偏差]
+#   VLA前馈  = clip(当前12D归一化气压 + PRESSURE_DELTA_SCALE * 12D气压偏差, 0, 1)
+#   最终气压 = clip(VLA前馈 + Koopman闭环修正, 0, 1)，随后由底层乘3转换为实物压力。
 #
-# Safe mock plumbing smoke (does not load SmolVLA weights or hardware):
-#   DEVICE=cpu DURATION_S=2 bash soft_vla/scripts/smolvla_pressure_state_deploy.sh
-# Real model + live cameras/state + mock pressure output:
-#   VLA_BACKEND=smolvla LIVE_OBSERVATION=1 STATE_HARDWARE=1 CAMERA_PREVIEW=1 bash soft_vla/scripts/smolvla_pressure_state_deploy.sh
-# Full hardware (first run with small PRESSURE_DELTA_SCALE and short DURATION_S):
-#   RUN_HARDWARE=1 VLA_BACKEND=smolvla LIVE_OBSERVATION=1 PRESSURE_DELTA_SCALE=0.2 DURATION_S=5 bash soft_vla/scripts/smolvla_pressure_state_deploy.sh
+# 频率关系：上层默认10Hz；每次生成的 target state 和 VLA前馈在底层50Hz的5个周期内保持不变；
+# Koopman闭环修正仍在每个50Hz周期根据最新状态重新计算。
+#
+# K 的生成与使用：
+#   FEEDBACK=fixed_k_integral 且 FIXED_K_PATH 为空时，会在控制进程启动阶段求解一次积分LQR的K；
+#   当前环境使用 NumPy 固定点迭代求解离散 Riccati 方程，求得后整个50Hz控制过程固定使用该K，不会在线重复迭代。
+#   如果设置 FIXED_K_PATH=/path/to/fixed_k.npz，则直接加载提前生成的离线K，启动时不再求解。
+# Ctrl+C/SIGTERM 会通知所有子进程退出；50Hz控制进程会连续发送 zero pressure 后再关闭串口。
 
 ROOT=${ROOT:-/home/cao/skill_learning_soft_robot}
 PY=${PY:-/home/cao/miniconda3/envs/soft_vla_cuda/bin/python}
 export LD_LIBRARY_PATH="/home/cao/miniconda3/envs/soft_vla_cuda/lib:${LD_LIBRARY_PATH:-}"
 cd "$ROOT"
 
-# ===== Runtime mode =====
-RUN_HARDWARE=${RUN_HARDWARE:-0}
-STATE_HARDWARE=${STATE_HARDWARE:-0}
-VLA_BACKEND=${VLA_BACKEND:-mock}       # mock / smolvla
-LIVE_OBSERVATION=${LIVE_OBSERVATION:-0}
-CAMERA_PREVIEW=${CAMERA_PREVIEW:-0}
-WAIT_FOR_START_KEY=${WAIT_FOR_START_KEY:-1}
-WAIT_FOR_FIRST_ACTION_CHUNK=${WAIT_FOR_FIRST_ACTION_CHUNK:-1}
+# ===== 运行模式 =====
+RUN_HARDWARE=${RUN_HARDWARE:-0}          # 1: 打开串口并真实下发压力；0: pressure mock
+STATE_HARDWARE=${STATE_HARDWARE:-0}      # 1: 读取真实 LuMo 动捕；RUN_HARDWARE=1 时自动等价开启
+VLA_BACKEND=${VLA_BACKEND:-mock}         # mock 或 smolvla
+LIVE_OBSERVATION=${LIVE_OBSERVATION:-0}  # 1: 使用实时三相机；0: 使用 replay 图像
+CAMERA_PREVIEW=${CAMERA_PREVIEW:-0}      # 1: 显示三相机预览窗口
+WAIT_FOR_START_KEY=${WAIT_FOR_START_KEY:-1}  # 1: 模型准备完成后按键开始
+WAIT_FOR_FIRST_ACTION_CHUNK=${WAIT_FOR_FIRST_ACTION_CHUNK:-1}  # 1: 首段 action chunk 就绪后启动控制
 
-# ===== Fixed 50 Hz lower loop and configurable upper loop =====
-CONTROL_FREQUENCY=${CONTROL_FREQUENCY:-50}
-UPPER_FREQUENCY=${UPPER_FREQUENCY:-10}
+# ===== 固定50Hz底层与可配置上层频率 =====
+CONTROL_FREQUENCY=${CONTROL_FREQUENCY:-50}  # 本部署流程固定为50Hz
+UPPER_FREQUENCY=${UPPER_FREQUENCY:-10}      # 上层VLA/target-state频率；默认10Hz
 if [[ "$CONTROL_FREQUENCY" != "50" && "$CONTROL_FREQUENCY" != "50.0" ]]; then
   echo "[soft_vla] pressure-state deployment requires CONTROL_FREQUENCY=50, got $CONTROL_FREQUENCY" >&2
   exit 2
@@ -53,15 +58,14 @@ MAX_INFERENCE_CHUNKS=${MAX_INFERENCE_CHUNKS:-}
 ACTION_PRINT_INTERVAL_STEPS=${ACTION_PRINT_INTERVAL_STEPS:-10}
 FIRST_ACTION_TIMEOUT_S=${FIRST_ACTION_TIMEOUT_S:-120}
 
-# ===== Pressure-state SmolVLA and lower motion control =====
+# ===== Pressure-state SmolVLA 与底层运动控制 =====
 CHECKPOINT=${CHECKPOINT:-"$ROOT/soft_vla/outputs/full_runs/smolvla_pressure_state_bs8_20k_pressure_state_bs8_20k_20260715_161801/checkpoints/010000/pretrained_model"}
-# Replay mode only uses recorded images; its observation.state is replaced by
-# the runtime's current state12 + gripper + normalized pressure12.
+# replay 模式只使用记录图像；observation.state 会替换为运行时当前运动状态、夹爪和归一化气压。
 DATASET_ROOT=${DATASET_ROOT:-"$ROOT/lerobot_conversion/outputs/robot_records_7_03_1_delta_tcp"}
 REPO_ID=${REPO_ID:-local/soft_robot_7_03_1_delta_tcp}
 KOOPMAN_CHECKPOINT=${KOOPMAN_CHECKPOINT:-"$ROOT/motion_control_training/koopman/runs/robot_records_7_03_1_delta_tcp_10hz_to_50hz_k50_epoch1500_wandb_online_20260706_2159/best.pt"}
-FEEDBACK=${FEEDBACK:-fixed_k_integral}
-FIXED_K_PATH=${FIXED_K_PATH:-}
+FEEDBACK=${FEEDBACK:-fixed_k_integral}  # none / integral_lqr / fixed_k_integral
+FIXED_K_PATH=${FIXED_K_PATH:-}          # 空: 启动时求一次K；非空: 加载提前生成的离线K
 DEVICE=${DEVICE:-cuda}
 DELTA_TCP_SCALE=${DELTA_TCP_SCALE:-1}
 PRESSURE_DELTA_SCALE=${PRESSURE_DELTA_SCALE:-1}
@@ -75,7 +79,7 @@ Q_LATENT_WEIGHT=${Q_LATENT_WEIGHT:-0.1}
 Q_INTEGRAL_WEIGHT=${Q_INTEGRAL_WEIGHT:-0.5}
 R_WEIGHT=${R_WEIGHT:-50.0}
 
-# ===== Robot and cameras =====
+# ===== 动捕、串口与相机 =====
 LUMO_IP=${LUMO_IP:-192.168.140.1}
 RIGID_BODY_ID=${RIGID_BODY_ID:-1}
 RECEIVE_TIMEOUT_MS=${RECEIVE_TIMEOUT_MS:-1000}
@@ -97,7 +101,7 @@ CAMERA_PREVIEW_SCALE=${CAMERA_PREVIEW_SCALE:-0.5}
 CAMERA_PREVIEW_FPS=${CAMERA_PREVIEW_FPS:-10}
 CAMERA_PREVIEW_WINDOW=${CAMERA_PREVIEW_WINDOW:-soft_vla_pressure_state_live_cameras}
 
-# ===== Logging =====
+# ===== 数据与日志 =====
 EPISODE_INDEX=${EPISODE_INDEX:-0}
 VIDEO_BACKEND=${VIDEO_BACKEND:-pyav}
 IO_LABEL=mock_pressure
