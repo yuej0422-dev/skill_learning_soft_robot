@@ -36,6 +36,12 @@ lerobot_conversion/test_outputs/
 vision_to_state/lerobot_v3*/
 **/lerobot_v3*/
 
+# Local bulk datasets and captured robot episodes
+soft_vla/data/
+soft_vla/tests/tmp/
+data_collection/robot_records_*/
+motion_control_training/reference/KORL/dataset_orig/
+
 # Training/evaluation outputs
 **/outputs/
 **/runs/
@@ -79,5 +85,4 @@ vision_to_state/lerobot_v3*/
 md/
 soft_vla/archive/
 autodl_release/upload/
-motion_control_training/reference/KORL/dataset_orig/
 data_collection/robot_records_7_03_1/
