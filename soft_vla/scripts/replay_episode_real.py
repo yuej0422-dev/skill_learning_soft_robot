@@ -25,6 +25,13 @@ from soft_vla.motion_control.feedback_controllers import (
     make_integral_lqr_q_weights,
     solve_integral_lqr,
 )
+from soft_vla.motion_control.fulla_history_adapters import (
+    FullAHistoryKoopmanAdapter,
+    FullAHistoryKoopmanConfig,
+    PhysicalBarFeedbackAdapter,
+    PhysicalBarPressureConfig,
+    PhysicalBarPressureMLPAdapter,
+)
 from soft_vla.motion_control.koopman_adapter import KoopmanAdapter, KoopmanAdapterConfig
 from soft_vla.motion_control.reference_generator import ReferenceGenerator, ReferenceGeneratorConfig
 from soft_vla.real_robot.pressure_driver import MockPressureDriver, SerialPressureDriver, SerialPressureDriverConfig
@@ -118,6 +125,18 @@ def main() -> None:
     parser.add_argument("--packet-channels", type=int, choices=[12, 16], default=16)
     parser.add_argument("--feedforward", choices=["pressure_model", "awac"], default="pressure_model")
     parser.add_argument("--feedback", choices=["integral_lqr", "fixed_k_integral"], default="integral_lqr")
+    parser.add_argument(
+        "--pressure-output-units",
+        choices=["normalized", "physical_bar"],
+        default="normalized",
+        help="Unit contract of the pressure-model checkpoint; existing deployments default to normalized.",
+    )
+    parser.add_argument(
+        "--koopman-architecture",
+        choices=["legacy", "fullA_history_v2"],
+        default="legacy",
+        help="Checkpoint architecture; existing deployments default to the legacy Koopman model.",
+    )
     parser.add_argument("--pressure-checkpoint", type=Path, default=Path("motion_control_training/feedforward_pressure/runs/optimized_state12_raw_pressure/best.pt"))
     parser.add_argument("--awac-checkpoint", type=Path, default=Path("motion_control_training/KORL/runs/feedforward/awac_quadq_2k_eval_2x256/best.pt"))
     parser.add_argument(
@@ -168,13 +187,32 @@ def main() -> None:
         )
 
     if args.feedforward == "pressure_model":
-        feedforward = FeedforwardPressureMLPAdapter(
-            FeedforwardPressureConfig(checkpoint=args.pressure_checkpoint, device=args.device, input_mode="target_state")
-        )
+        if args.pressure_output_units == "physical_bar":
+            feedforward = PhysicalBarPressureMLPAdapter(
+                PhysicalBarPressureConfig(checkpoint=args.pressure_checkpoint, device=args.device)
+            )
+        else:
+            feedforward = FeedforwardPressureMLPAdapter(
+                FeedforwardPressureConfig(
+                    checkpoint=args.pressure_checkpoint,
+                    device=args.device,
+                    input_mode="target_state",
+                )
+            )
     else:
         feedforward = AwacFeedforwardAdapter(AwacFeedforwardConfig(checkpoint=args.awac_checkpoint, device=args.device))
 
-    koopman = KoopmanAdapter(KoopmanAdapterConfig(checkpoint=args.koopman_checkpoint, device=args.device))
+    if args.koopman_architecture == "fullA_history_v2":
+        koopman = FullAHistoryKoopmanAdapter(
+            FullAHistoryKoopmanConfig(checkpoint=args.koopman_checkpoint, device=args.device)
+        )
+        if not np.isclose(args.frequency, koopman.target_hz):
+            raise SystemExit(
+                f"control frequency {args.frequency:g} Hz does not match Koopman training target_hz "
+                f"{koopman.target_hz:g} Hz"
+            )
+    else:
+        koopman = KoopmanAdapter(KoopmanAdapterConfig(checkpoint=args.koopman_checkpoint, device=args.device))
     feedback = build_feedback(
         args.feedback,
         args.fixed_k_path,
@@ -187,6 +225,10 @@ def main() -> None:
         q_integral_weight=args.q_integral_weight,
         r_weight=args.r_weight,
     )
+    if isinstance(koopman, FullAHistoryKoopmanAdapter):
+        # Full-A B was trained with raw pressure in bar.  Convert its LQR
+        # correction to the normalized pressure contract used by the runtime.
+        feedback = PhysicalBarFeedbackAdapter(feedback, physical_pressure_max=3.0)
     runtime = MotionControlRuntime(
         feedforward=feedforward,
         feedback=feedback,
@@ -249,6 +291,8 @@ def main() -> None:
                     reference_timestamp_ns=t0,
                 )
                 writes += driver.send_physical(cmd.final_physical)
+                if isinstance(koopman, FullAHistoryKoopmanAdapter):
+                    koopman.record_control(cmd.motion_physical12)
                 timing.add_ns(time.monotonic_ns() - t0)
                 control_steps += 1
                 safety_flags.update(cmd.safety_flags)
@@ -308,7 +352,18 @@ def main() -> None:
         "target_source": "lerobot_observation_state_plus_lerobot_action_delta",
         "closed_loop_state_source": "mock_perfect_tracking" if args.mock else "lumo_measured_state",
         "feedforward": args.feedforward,
+        "pressure_output_units": args.pressure_output_units,
+        "pressure_checkpoint": str(args.pressure_checkpoint),
         "feedback": args.feedback,
+        "feedback_output_units": (
+            "physical_bar_converted_to_normalized"
+            if args.koopman_architecture == "fullA_history_v2"
+            else "legacy_normalized_contract"
+        ),
+        "koopman_architecture": args.koopman_architecture,
+        "koopman_checkpoint": str(args.koopman_checkpoint),
+        "koopman_history_steps": getattr(koopman, "history_steps", None),
+        "koopman_target_hz": getattr(koopman, "target_hz", None),
         "q_tcp6_weight": args.q_tcp6_weight,
         "q_state_tail_weight": args.q_state_tail_weight,
         "q_latent_weight": args.q_latent_weight,
