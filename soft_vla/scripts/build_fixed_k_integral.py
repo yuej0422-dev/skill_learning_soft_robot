@@ -27,7 +27,8 @@ def main() -> None:
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--device", default="cpu")
-    parser.add_argument("--dt", type=float, default=0.02)
+    parser.add_argument("--dt", type=float, default=None, help="Discrete controller timestep in seconds.")
+    parser.add_argument("--frequency", type=float, default=None, help="Alternative to --dt; uses dt=1/frequency.")
     parser.add_argument("--ny", type=int, default=6)
     parser.add_argument("--q-tcp6-weight", type=float, default=1.0)
     parser.add_argument("--q-state-tail-weight", type=float, default=0.1)
@@ -42,6 +43,20 @@ def main() -> None:
         )
     else:
         koopman = KoopmanAdapter(KoopmanAdapterConfig(checkpoint=args.koopman_checkpoint, device=args.device))
+    if args.dt is not None and args.frequency is not None:
+        raise SystemExit("Use only one of --dt or --frequency.")
+    if args.frequency is not None:
+        if args.frequency <= 0:
+            raise SystemExit("--frequency must be positive.")
+        dt = 1.0 / args.frequency
+    elif args.dt is not None:
+        if args.dt <= 0:
+            raise SystemExit("--dt must be positive.")
+        dt = args.dt
+    elif hasattr(koopman, "target_hz"):
+        dt = 1.0 / float(koopman.target_hz)
+    else:
+        dt = 0.02
     C = koopman.output_matrix(args.ny)
     q_weights = make_integral_lqr_q_weights(
         n_koopman=koopman.n_koopman,
@@ -55,7 +70,7 @@ def main() -> None:
         koopman.A_lift,
         koopman.B,
         C,
-        dt=args.dt,
+        dt=dt,
         q_weights=q_weights,
         r_weight=args.r_weight,
     )
@@ -70,6 +85,8 @@ def main() -> None:
                 "Bt_shape": list(Bt.shape),
                 "koopman_checkpoint": str(args.koopman_checkpoint),
                 "koopman_architecture": args.koopman_architecture,
+                "dt": dt,
+                "frequency": 1.0 / dt,
                 "ny": args.ny,
                 "q_tcp6_weight": args.q_tcp6_weight,
                 "q_state_tail_weight": args.q_state_tail_weight,

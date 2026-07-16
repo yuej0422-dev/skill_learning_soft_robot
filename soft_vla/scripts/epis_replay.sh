@@ -65,6 +65,7 @@ if [[ "$FEEDBACK" == "fixed_k_integral" ]]; then
   "$PY" soft_vla/scripts/build_fixed_k_integral.py \
     --output "$FIXED_K_PATH" \
     --device "$DEVICE" \
+    --frequency "$FREQUENCY" \
     --q-tcp6-weight "$Q_TCP6_WEIGHT" \
     --q-state-tail-weight "$Q_STATE_TAIL_WEIGHT" \
     --q-latent-weight "$Q_LATENT_WEIGHT" \

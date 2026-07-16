@@ -76,6 +76,7 @@ def build_feedback(
     q_latent_weight: float,
     q_integral_weight: float,
     r_weight: float,
+    dt: float,
 ) -> IntegralFeedbackController:
     C = koopman.output_matrix(6)
     if kind == "fixed_k_integral":
@@ -91,11 +92,19 @@ def build_feedback(
             latent_weight=q_latent_weight,
             integral_weight=q_integral_weight,
         )
-        K, _, _ = solve_integral_lqr(koopman.A_lift, koopman.B, C, q_weights=q_weights, r_weight=r_weight)
+        K, _, _ = solve_integral_lqr(
+            koopman.A_lift,
+            koopman.B,
+            C,
+            dt=dt,
+            q_weights=q_weights,
+            r_weight=r_weight,
+        )
     return IntegralFeedbackController(
         K=K,
         C=C,
         config=IntegralFeedbackConfig(
+            dt=dt,
             ny=6,
             max_integral_error=max_integral_error,
             feedback_gain_scale=feedback_gain_scale,
@@ -171,6 +180,8 @@ def main() -> None:
         raise SystemExit("--pressure-scale must be in [0, 1] for small-amplitude real replay.")
     if args.feedback_gain_scale < 0 or args.feedback_gain_scale > 1.0:
         raise SystemExit("--feedback-gain-scale must be in [0, 1] for real replay.")
+    if args.frequency <= 0:
+        raise SystemExit("--frequency must be positive.")
     if args.target_frequency <= 0:
         raise SystemExit("--target-frequency must be positive.")
 
@@ -223,6 +234,7 @@ def main() -> None:
         q_latent_weight=args.q_latent_weight,
         q_integral_weight=args.q_integral_weight,
         r_weight=args.r_weight,
+        dt=1.0 / args.frequency,
     )
     runtime = MotionControlRuntime(
         feedforward=feedforward,
@@ -353,6 +365,7 @@ def main() -> None:
         "target_state_updates": len(rows),
         "target_frequency_hz": args.target_frequency,
         "control_frequency_hz": args.frequency,
+        "feedback_dt_s": 1.0 / args.frequency,
         "control_steps_per_target": ref_gen.substeps,
         "planned_duration_s": len(rows) / args.target_frequency,
         "control_steps": control_steps,

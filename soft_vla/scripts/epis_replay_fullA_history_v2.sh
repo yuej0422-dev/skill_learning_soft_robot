@@ -14,6 +14,8 @@ export LD_LIBRARY_PATH="/home/cao/miniconda3/envs/soft_vla_cuda/lib:${LD_LIBRARY
 #   TARGET_FREQUENCY=1 MAX_FRAMES=3 bash soft_vla/scripts/epis_replay_fullA_history_v2.sh
 # 上层每10秒发送一个target、总共发送2次：
 #   TARGET_FREQUENCY=0.1 MAX_FRAMES=2 bash soft_vla/scripts/epis_replay_fullA_history_v2.sh
+# 使用10Hz Full-A Koopman时，需同时覆盖checkpoint与底层频率：
+#   KOOPMAN_CHECKPOINT=/path/to/10hz/best.pt FREQUENCY=10 TARGET_FREQUENCY=1 MAX_FRAMES=3 bash soft_vla/scripts/epis_replay_fullA_history_v2.sh
 # 实物小段验证：
 #   MAX_FRAMES=2 PRESSURE_SCALE=0.2 bash soft_vla/scripts/epis_replay_fullA_history_v2.sh
 # 离线生成临时固定 K 后回放：
@@ -40,7 +42,7 @@ PORT=${PORT:-/dev/serial/by-id/usb-1a86_USB2.0-Ser_-if00-port0}
 LUMO_IP=${LUMO_IP:-192.168.140.1}
 RIGID_BODY_ID=${RIGID_BODY_ID:-1}
 
-# 模型训练频率为 50 Hz；适配器会拒绝频率不一致的部署。
+# FREQUENCY必须与Full-A Koopman checkpoint的target_hz一致。
 FREQUENCY=${FREQUENCY:-50}
 TARGET_FREQUENCY=${TARGET_FREQUENCY:-10}  # 上层target-state频率：10 / 1 / 0.1 Hz
 DELTA_TCP_SCALE=${DELTA_TCP_SCALE:-1}
@@ -77,7 +79,7 @@ if [[ "$FEEDBACK" == "fixed_k_integral" ]]; then
       --koopman-checkpoint "$KOOPMAN_CHECKPOINT" \
       --output "$FIXED_K_PATH" \
       --device "$DEVICE" \
-      --dt 0.02 \
+      --frequency "$FREQUENCY" \
       --q-tcp6-weight "$Q_TCP6_WEIGHT" \
       --q-state-tail-weight "$Q_STATE_TAIL_WEIGHT" \
       --q-latent-weight "$Q_LATENT_WEIGHT" \
