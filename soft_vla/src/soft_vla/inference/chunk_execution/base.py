@@ -44,16 +44,20 @@ class ChunkExecutor(Protocol):
     def get_debug_state(self) -> dict: ...
 
 
-def as_chunk(chunk) -> np.ndarray:
+def as_chunk(chunk, *, action_dim: int = 7) -> np.ndarray:
     arr = np.asarray(chunk, dtype=np.float32)
     if arr.ndim == 3:
         arr = arr[0]
-    if arr.ndim != 2 or arr.shape[1] != 7:
-        raise ValueError(f"chunk must have shape [T,7] or [1,T,7], got {arr.shape}")
+    if arr.ndim != 2 or arr.shape[1] != int(action_dim):
+        raise ValueError(
+            f"chunk must have shape [T,{action_dim}] or [1,T,{action_dim}], got {arr.shape}"
+        )
     return arr
 
 
-def safe_fallback(last_gripper: float = 1.0) -> np.ndarray:
-    action = np.zeros(7, dtype=np.float32)
+def safe_fallback(last_gripper: float = 1.0, *, action_dim: int = 7) -> np.ndarray:
+    if int(action_dim) < 7:
+        raise ValueError(f"action_dim must be at least 7, got {action_dim}")
+    action = np.zeros(int(action_dim), dtype=np.float32)
     action[6] = 1.0 if last_gripper >= 0.5 else 0.0
     return action

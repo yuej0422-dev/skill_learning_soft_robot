@@ -28,6 +28,20 @@ DEFAULT_KOOPMAN_CHECKPOINT = (
 )
 
 
+def validate_pressure_state_checkpoint_schema(checkpoint: Path) -> None:
+    config_path = checkpoint / "config.json"
+    if not config_path.is_file():
+        raise SystemExit(f"pressure-state checkpoint config not found: {config_path}")
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    state_shape = payload.get("input_features", {}).get("observation.state", {}).get("shape")
+    action_shape = payload.get("output_features", {}).get("action", {}).get("shape")
+    if state_shape != [25] or action_shape != [19]:
+        raise SystemExit(
+            "pressure_delta19 requires checkpoint observation.state=[25] and action=[19], "
+            f"got state={state_shape}, action={action_shape} from {config_path}"
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Deploy SmolVLA with the 50 Hz motion-policy controller.")
     parser.add_argument("--config", default="soft_vla/configs/smolvla_deploy.yaml")
@@ -70,6 +84,8 @@ def main() -> None:
     parser.add_argument("--baudrate", type=int, default=115200)
     parser.add_argument("--packet-channels", type=int, choices=[16], default=16)
     parser.add_argument("--duration-s", type=float, default=2.0)
+    parser.add_argument("--upper-frequency", type=float, default=10.0)
+    parser.add_argument("--control-frequency", type=float, default=50.0)
     parser.add_argument("--log-jsonl", type=Path, default=None)
     parser.add_argument("--chunk-size", type=int, default=50)
     parser.add_argument("--execution-horizon", type=int, default=10)
@@ -78,7 +94,10 @@ def main() -> None:
     parser.add_argument("--chunk-expected-stale-steps", type=int, default=2)
     parser.add_argument("--chunk-worst-stale-steps", type=int, default=5)
     parser.add_argument("--delta-tcp-scale", type=float, default=1.0)
+    parser.add_argument("--pressure-delta-scale", type=float, default=1.0)
     parser.add_argument("--pressure-scale", type=float, default=1.0)
+    parser.add_argument("--vla-action-mode", choices=["delta_tcp7", "pressure_delta19"], default="delta_tcp7")
+    parser.add_argument("--reference-interpolation", choices=["linear", "zero_order_hold"], default="linear")
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
     parser.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT)
     parser.add_argument("--repo-id", default="local/soft_robot_7_03_1_delta_tcp")
@@ -87,7 +106,7 @@ def main() -> None:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--max-inference-chunks", type=int, default=None)
     parser.add_argument("--no-amp", action="store_true", help="Disable CUDA autocast during real SmolVLA inference.")
-    parser.add_argument("--feedforward", choices=["pressure_model", "awac"], default="pressure_model")
+    parser.add_argument("--feedforward", choices=["pressure_model", "awac", "external"], default="pressure_model")
     parser.add_argument("--feedback", choices=["none", "integral_lqr", "fixed_k_integral"], default="fixed_k_integral")
     parser.add_argument("--pressure-checkpoint", type=Path, default=DEFAULT_PRESSURE_CHECKPOINT)
     parser.add_argument("--awac-checkpoint", type=Path, default=DEFAULT_AWAC_CHECKPOINT)
@@ -118,6 +137,12 @@ def main() -> None:
         raise SystemExit("Use --mock, --real-policy, or --hardware-enabled.")
     if args.pressure_scale < 0 or args.pressure_scale > 1.0:
         raise SystemExit("--pressure-scale must be in [0, 1].")
+    if args.upper_frequency <= 0 or args.control_frequency <= 0:
+        raise SystemExit("--upper-frequency and --control-frequency must be positive.")
+    if args.pressure_delta_scale < 0:
+        raise SystemExit("--pressure-delta-scale must be non-negative.")
+    if args.vla_action_mode == "pressure_delta19" and args.feedforward != "external":
+        raise SystemExit("--vla-action-mode pressure_delta19 requires --feedforward external.")
     if args.feedback_gain_scale < 0 or args.feedback_gain_scale > 1.0:
         raise SystemExit("--feedback-gain-scale must be in [0, 1].")
     if not (0.0 <= args.gripper_close_threshold < args.gripper_open_threshold <= 1.0):
@@ -125,6 +150,8 @@ def main() -> None:
 
     if args.mock or args.real_policy or args.hardware_enabled:
         checkpoint = args.checkpoint if args.checkpoint.is_absolute() else REPO_ROOT / args.checkpoint
+        if args.vla_action_mode == "pressure_delta19":
+            validate_pressure_state_checkpoint_schema(checkpoint)
         dataset_root = args.dataset_root if args.dataset_root.is_absolute() else REPO_ROOT / args.dataset_root
         pressure_checkpoint = (
             args.pressure_checkpoint if args.pressure_checkpoint.is_absolute() else REPO_ROOT / args.pressure_checkpoint
@@ -139,7 +166,11 @@ def main() -> None:
         report = run_smolvla_async_runtime(
             SmolVLAAsyncRuntimeConfig(
                 duration_s=args.duration_s,
+                upper_frequency_hz=args.upper_frequency,
+                control_frequency_hz=args.control_frequency,
                 mode=args.mode,
+                vla_action_mode=args.vla_action_mode,
+                reference_interpolation=args.reference_interpolation,
                 chunk_size=args.chunk_size,
                 execution_horizon=args.execution_horizon,
                 replan_interval=args.replan_interval,
@@ -147,6 +178,7 @@ def main() -> None:
                 chunk_expected_stale_steps=args.chunk_expected_stale_steps,
                 chunk_worst_stale_steps=args.chunk_worst_stale_steps,
                 delta_tcp_scale=args.delta_tcp_scale,
+                pressure_delta_scale=args.pressure_delta_scale,
                 pressure_scale=args.pressure_scale,
                 log_jsonl=str(args.log_jsonl) if args.log_jsonl else None,
                 hardware_enabled=args.hardware_enabled,

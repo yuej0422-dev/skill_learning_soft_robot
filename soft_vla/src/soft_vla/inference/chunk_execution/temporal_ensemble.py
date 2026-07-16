@@ -24,12 +24,14 @@ class TemporalEnsembleExecutor:
         weight_type: str = "exponential",
         decay: float = 0.25,
         prefer_newer_predictions: bool = True,
+        action_dim: int = 7,
     ) -> None:
         self.replan_interval = replan_interval
         self.max_history_chunks = max_history_chunks
         self.weight_type = weight_type
         self.decay = decay
         self.prefer_newer_predictions = prefer_newer_predictions
+        self.action_dim = int(action_dim)
         self.reset()
 
     def reset(self) -> None:
@@ -50,7 +52,7 @@ class TemporalEnsembleExecutor:
         next_dispatch_tick: int | None = None,
         drop_stale_actions: bool = True,
     ) -> None:
-        arr = as_chunk(chunk)
+        arr = as_chunk(chunk, action_dim=self.action_dim)
         self.chunk_id += 1
         start_step = int(round(observation_timestamp)) if request_tick is None else int(request_tick)
         self.history.append(HistoricalChunk(self.chunk_id, start_step, arr.copy()))
@@ -90,7 +92,15 @@ class TemporalEnsembleExecutor:
                 metadata.append({"chunk_id": item.chunk_id, "chunk_step": int(j)})
         if not candidates:
             self.underruns += 1
-            return ActionRecord(safe_fallback(self.last_gripper), "te_underrun_fallback", None, None, control_step, 0, {})
+            return ActionRecord(
+                safe_fallback(self.last_gripper, action_dim=self.action_dim),
+                "te_underrun_fallback",
+                None,
+                None,
+                control_step,
+                0,
+                {},
+            )
         actions = np.stack(candidates).astype(np.float32)
         ages_arr = np.asarray(ages, dtype=np.int64)
         weights = self._weights(ages_arr).astype(np.float32)

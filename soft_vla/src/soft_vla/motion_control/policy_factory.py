@@ -13,6 +13,7 @@ from soft_vla.motion_control.feedforward_adapters import (
     FeedforwardPolicy,
     FeedforwardPressureConfig,
     FeedforwardPressureMLPAdapter,
+    ZeroFeedforwardPolicy,
 )
 from soft_vla.motion_control.feedback_controllers import (
     IntegralFeedbackConfig,
@@ -109,6 +110,9 @@ def build_motion_policy(config: MotionPolicyConfig) -> BuiltMotionPolicy:
 def _build_feedforward(config: MotionPolicyConfig) -> FeedforwardPolicy:
     if config.feedforward in _FEEDFORWARD_BUILDERS:
         return _FEEDFORWARD_BUILDERS[config.feedforward](config)
+    if config.feedforward == "external":
+        # The runtime supplies the VLA pressure feedforward on every compute call.
+        return ZeroFeedforwardPolicy()
     if config.feedforward == "pressure_model":
         return FeedforwardPressureMLPAdapter(
             FeedforwardPressureConfig(

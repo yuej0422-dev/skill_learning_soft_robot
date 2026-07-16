@@ -37,7 +37,10 @@ class SmolVLAAsyncRuntimeConfig:
     chunk_expected_stale_steps: int = 2
     chunk_worst_stale_steps: int = 5
     mode: str = "receding_horizon"
+    vla_action_mode: str = "delta_tcp7"
+    reference_interpolation: str = "linear"
     delta_tcp_scale: float = 0.2
+    pressure_delta_scale: float = 1.0
     pressure_scale: float = 0.2
     log_jsonl: str | None = None
     hardware_enabled: bool = False
@@ -444,6 +447,11 @@ def control_process_50hz(
                     now_ns=t0,
                     state_timestamp_ns=measured.monotonic_ns,
                     reference_timestamp_ns=t0,
+                    feedforward_action12=(
+                        None
+                        if latest_reference.get("feedforward_pressure12") is None
+                        else np.asarray(latest_reference["feedforward_pressure12"], dtype=np.float32)
+                    ),
                 )
                 ref_step = {"upper_step": latest_reference["upper_step"], "substep": int(substep)}
                 reference_state = reference
@@ -473,6 +481,12 @@ def control_process_50hz(
                     "measured_state": measured.state12.tolist(),
                     "reference_state": None if reference_state is None else reference_state.tolist(),
                     "tracking_error_tcp6": None if tcp_error is None else tcp_error.tolist(),
+                    "vla_feedforward_pressure12": (
+                        None
+                        if latest_reference is None or latest_reference.get("feedforward_pressure12") is None
+                        else latest_reference["feedforward_pressure12"]
+                    ),
+                    "closed_loop_delta_action12": command.debug.get("closed_loop_delta_action12", np.zeros(12)).tolist(),
                     "motion_norm12": command.motion_norm12.tolist(),
                     "pressure": command.final_physical.tolist(),
                     "flags": list(command.safety_flags),
@@ -559,6 +573,7 @@ def upper_dispatch_process_10hz(
             upper_frequency_hz=config.upper_frequency_hz,
             control_frequency_hz=config.control_frequency_hz,
             delta_tcp_scale=config.delta_tcp_scale,
+            interpolation=config.reference_interpolation,
         )
     )
     executor = make_chunk_executor(
@@ -569,6 +584,7 @@ def upper_dispatch_process_10hz(
             "replan_interval": config.replan_interval,
             "chunk_trigger_margin": config.chunk_trigger_margin,
             "chunk_expected_stale_steps": config.chunk_expected_stale_steps,
+            "action_dim": _vla_action_dim(config),
         }
     )
     latest_state = {"state12": np.zeros(12, dtype=np.float32).tolist(), "gripper_open": 1.0}
@@ -608,16 +624,17 @@ def upper_dispatch_process_10hz(
         record_source = "exception_fallback"
         try:
             record = executor.get_action(steps, time.monotonic())
-            action7 = record.action
+            raw_action = record.action
             record_source = record.source
             if "fallback" in record.source:
                 fallbacks += 1
-                action7 = action7.copy()
-                action7[6] = float(latest_state.get("gripper_open", 1.0))
+                raw_action = raw_action.copy()
+                raw_action[6] = float(latest_state.get("gripper_open", 1.0))
         except Exception:
             fallbacks += 1
-            action7 = np.zeros(7, dtype=np.float32)
-            action7[6] = float(latest_state.get("gripper_open", 1.0))
+            raw_action = np.zeros(_vla_action_dim(config), dtype=np.float32)
+            raw_action[6] = float(latest_state.get("gripper_open", 1.0))
+        action7, feedforward_pressure12, pressure_delta12 = _decode_vla_action(config, raw_action, latest_state)
         upper_action = UpperAction(
             delta_tcp6=action7[:6],
             gripper_open=float(action7[6]),
@@ -633,6 +650,9 @@ def upper_dispatch_process_10hz(
                 "reference_states12": segment.reference_states12.tolist(),
                 "gripper_open": segment.gripper_open,
                 "delta_tcp6": upper_action.delta_tcp6.tolist(),
+                "feedforward_pressure12": (
+                    None if feedforward_pressure12 is None else feedforward_pressure12.tolist()
+                ),
             },
         )
         if config.action_print_interval_steps > 0 and steps % int(config.action_print_interval_steps) == 0:
@@ -679,7 +699,12 @@ def upper_dispatch_process_10hz(
                 "wall_time": t0 / 1_000_000_000.0,
                 "action_dispatch_time": time.monotonic_ns() / 1_000_000_000.0,
                 "action": action7.astype(float).tolist(),
-                "action_before_clip": action7.astype(float).tolist(),
+                "raw_vla_action": raw_action.astype(float).tolist(),
+                "pressure_delta12": None if pressure_delta12 is None else pressure_delta12.astype(float).tolist(),
+                "vla_feedforward_pressure12": (
+                    None if feedforward_pressure12 is None else feedforward_pressure12.astype(float).tolist()
+                ),
+                "action_before_clip": raw_action.astype(float).tolist(),
                 "action_after_clip": action7.astype(float).tolist(),
                 "record_source": record_source,
                 "period_ms": period_ms,
@@ -769,7 +794,7 @@ def smolvla_inference_process(
         request_tick = int(pending_request["request_tick"])
         request_time_ns = int(pending_request["request_time_ns"])
         t0 = time.monotonic_ns()
-        chunk = np.zeros((config.chunk_size, 7), dtype=np.float32)
+        chunk = np.zeros((config.chunk_size, _vla_action_dim(config)), dtype=np.float32)
         chunk[:, 6] = 1.0
         # Tiny deterministic motion signal lets queue/reference plumbing be inspected.
         chunk[:, 0] = 0.0002 * np.sin(np.linspace(0.0, np.pi, config.chunk_size, dtype=np.float32))
@@ -936,13 +961,8 @@ def smolvla_real_inference_process(
                     key: torch.from_numpy(rgb).permute(2, 0, 1).to(dtype=torch.float32) / 255.0
                     for key, rgb in images.items()
                 }
-                state13 = np.concatenate(
-                    [
-                        np.asarray(latest_state["state12"], dtype=np.float32),
-                        np.asarray([float(latest_state.get("gripper_open", 1.0))], dtype=np.float32),
-                    ]
-                )
-                obs["observation.state"] = torch.as_tensor(state13, dtype=torch.float32)
+                observation_state = _build_vla_observation_state(config, latest_state)
+                obs["observation.state"] = torch.as_tensor(observation_state, dtype=torch.float32)
                 obs["task"] = config.task
                 observation_source = "live_cameras_latest_state"
             else:
@@ -960,6 +980,11 @@ def smolvla_real_inference_process(
                     samples = iter(source)
                     sample = next(samples)
                 obs = {k: v for k, v in sample.items() if k not in {"action", "action_is_pad"}}
+                if config.vla_action_mode == "pressure_delta19":
+                    # Replay mode supplies recorded images, while state/pressure must
+                    # still reflect the robot currently controlled by this runtime.
+                    observation_state = _build_vla_observation_state(config, latest_state)
+                    obs["observation.state"] = torch.as_tensor(observation_state, dtype=torch.float32)
                 observation_source = "lerobot_replay"
             start_ns = time.monotonic_ns()
             batch = preprocessor(obs)
@@ -975,8 +1000,12 @@ def smolvla_real_inference_process(
                 chunk = raw_chunk[0]
             else:
                 chunk = raw_chunk
-            if chunk.shape[-1] != 7:
-                raise ValueError(f"SmolVLA action chunk must end with dim 7, got {chunk.shape}")
+            expected_action_dim = _vla_action_dim(config)
+            if chunk.shape[-1] != expected_action_dim:
+                raise ValueError(
+                    f"SmolVLA action chunk must end with dim {expected_action_dim} "
+                    f"for mode {config.vla_action_mode!r}, got {chunk.shape}"
+                )
             chunk = chunk.copy()
             previous_gripper = float(latest_state.get("gripper_open", config.initial_gripper_open))
             chunk[:, 6] = _postprocess_gripper_sequence(
@@ -1056,6 +1085,60 @@ def smolvla_real_inference_process(
             },
         }
     )
+
+
+def _vla_action_dim(config: SmolVLAAsyncRuntimeConfig) -> int:
+    if config.vla_action_mode == "delta_tcp7":
+        return 7
+    if config.vla_action_mode == "pressure_delta19":
+        return 19
+    raise ValueError(f"unsupported vla_action_mode: {config.vla_action_mode!r}")
+
+
+def _current_pressure_norm12(latest_state: dict[str, Any]) -> np.ndarray:
+    value = latest_state.get("motion_norm12", latest_state.get("u_p12", np.zeros(12, dtype=np.float32)))
+    pressure = np.asarray(value, dtype=np.float32).reshape(-1)
+    if pressure.shape != (12,):
+        raise ValueError(f"current normalized pressure must have shape (12,), got {pressure.shape}")
+    if not np.all(np.isfinite(pressure)):
+        raise ValueError("current normalized pressure contains NaN or Inf")
+    return np.clip(pressure, 0.0, 1.0).astype(np.float32)
+
+
+def _build_vla_observation_state(
+    config: SmolVLAAsyncRuntimeConfig,
+    latest_state: dict[str, Any],
+) -> np.ndarray:
+    state12 = np.asarray(latest_state["state12"], dtype=np.float32).reshape(-1)
+    if state12.shape != (12,):
+        raise ValueError(f"state12 must have shape (12,), got {state12.shape}")
+    gripper = np.asarray([float(latest_state.get("gripper_open", 1.0))], dtype=np.float32)
+    if config.vla_action_mode == "pressure_delta19":
+        return np.concatenate([state12, gripper, _current_pressure_norm12(latest_state)]).astype(np.float32)
+    return np.concatenate([state12, gripper]).astype(np.float32)
+
+
+def _decode_vla_action(
+    config: SmolVLAAsyncRuntimeConfig,
+    raw_action: np.ndarray,
+    latest_state: dict[str, Any],
+) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None]:
+    action = np.asarray(raw_action, dtype=np.float32).reshape(-1)
+    expected_dim = _vla_action_dim(config)
+    if action.shape != (expected_dim,):
+        raise ValueError(f"VLA action must have shape ({expected_dim},), got {action.shape}")
+    if not np.all(np.isfinite(action)):
+        raise ValueError("VLA action contains NaN or Inf")
+    action7 = action[:7].copy()
+    if config.vla_action_mode == "delta_tcp7":
+        return action7, None, None
+    pressure_delta12 = action[7:19].copy()
+    feedforward_pressure12 = np.clip(
+        _current_pressure_norm12(latest_state) + float(config.pressure_delta_scale) * pressure_delta12,
+        0.0,
+        1.0,
+    ).astype(np.float32)
+    return action7, feedforward_pressure12, pressure_delta12
 
 
 def _camera_preview_publisher(

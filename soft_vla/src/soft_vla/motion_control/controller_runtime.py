@@ -32,12 +32,18 @@ class MotionControlRuntime:
         state_timestamp_ns: int | None = None,
         reference_timestamp_ns: int | None = None,
         pressure_scale: float = 1.0,
+        feedforward_action12: np.ndarray | None = None,
     ) -> PressureCommand:
-        ff = self.feedforward.predict(
-            current_state12=current_state12,
-            reference_state12=reference_state12,
-            delta_tcp6=delta_tcp6,
-        )
+        if feedforward_action12 is None:
+            ff = self.feedforward.predict(
+                current_state12=current_state12,
+                reference_state12=reference_state12,
+                delta_tcp6=delta_tcp6,
+            )
+        else:
+            ff = np.asarray(feedforward_action12, dtype=np.float32).reshape(12)
+            if not np.all(np.isfinite(ff)):
+                raise ValueError("feedforward_action12 contains NaN or Inf")
         feedback = np.zeros(12, dtype=np.float32)
         if self.feedback is not None:
             if lifted_error is None:

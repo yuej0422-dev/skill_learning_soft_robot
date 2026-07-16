@@ -4,7 +4,8 @@ from .base import ActionRecord, as_chunk
 
 
 class SingleStepExecutor:
-    def __init__(self) -> None:
+    def __init__(self, *, action_dim: int = 7) -> None:
+        self.action_dim = int(action_dim)
         self.reset()
 
     def reset(self) -> None:
@@ -24,7 +25,7 @@ class SingleStepExecutor:
         next_dispatch_tick: int | None = None,
         drop_stale_actions: bool = True,
     ) -> None:
-        self.chunk = as_chunk(chunk)
+        self.chunk = as_chunk(chunk, action_dim=self.action_dim)
         self.chunk_id += 1
         request_tick = int(round(observation_timestamp)) if request_tick is None else int(request_tick)
         result_tick = request_tick if result_tick is None else int(result_tick)

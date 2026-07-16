@@ -15,6 +15,7 @@ class FixedChunkExecutor:
         execution_horizon: int = 10,
         expected_stale_steps: int = 0,
         trigger_margin: int = 0,
+        action_dim: int = 7,
     ) -> None:
         if execution_horizon > chunk_size:
             raise ValueError("execution_horizon must be <= chunk_size")
@@ -22,6 +23,7 @@ class FixedChunkExecutor:
         self.execution_horizon = execution_horizon
         self.expected_stale_steps = max(0, int(expected_stale_steps))
         self.trigger_margin = max(0, int(trigger_margin))
+        self.action_dim = int(action_dim)
         self.reset()
 
     def reset(self) -> None:
@@ -44,7 +46,7 @@ class FixedChunkExecutor:
         next_dispatch_tick: int | None = None,
         drop_stale_actions: bool = True,
     ) -> None:
-        arr = as_chunk(chunk)
+        arr = as_chunk(chunk, action_dim=self.action_dim)
         self.chunk_id += 1
         request_tick = int(round(observation_timestamp)) if request_tick is None else int(request_tick)
         result_tick = request_tick if result_tick is None else int(result_tick)
@@ -74,7 +76,15 @@ class FixedChunkExecutor:
     def get_action(self, control_step: int, control_timestamp: float) -> ActionRecord:
         if not self.queue:
             self.underruns += 1
-            return ActionRecord(safe_fallback(self.last_gripper), "queue_underrun_fallback", None, None, control_step, 0, {})
+            return ActionRecord(
+                safe_fallback(self.last_gripper, action_dim=self.action_dim),
+                "queue_underrun_fallback",
+                None,
+                None,
+                control_step,
+                0,
+                {},
+            )
         action, chunk_id, chunk_step, rel_abs = self.queue.popleft()
         self.last_gripper = float(action[6])
         return ActionRecord(action, "chunk", chunk_id, chunk_step, rel_abs, control_step - rel_abs, dict(self.timing))
@@ -91,5 +101,6 @@ class FixedChunkExecutor:
             "underruns": self.underruns,
             "expected_stale_steps": self.expected_stale_steps,
             "trigger_margin": self.trigger_margin,
+            "action_dim": self.action_dim,
             "timing": dict(self.timing),
         }

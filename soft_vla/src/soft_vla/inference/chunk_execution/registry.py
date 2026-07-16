@@ -9,14 +9,16 @@ from .temporal_ensemble import TemporalEnsembleExecutor
 
 def make_chunk_executor(config: dict):
     mode = config.get("mode", "single_step")
+    action_dim = int(config.get("action_dim", 7))
     if mode == "single_step":
-        return SingleStepExecutor()
+        return SingleStepExecutor(action_dim=action_dim)
     if mode == "chunk":
         return FixedChunkExecutor(
             chunk_size=int(config.get("chunk_size", 50)),
             execution_horizon=int(config.get("execution_horizon", 10)),
             expected_stale_steps=int(config.get("chunk_expected_stale_steps", config.get("expected_stale_steps", 2))),
             trigger_margin=int(config.get("chunk_trigger_margin", config.get("trigger_margin", 1))),
+            action_dim=action_dim,
         )
     if mode == "receding_horizon":
         return RecedingHorizonExecutor(
@@ -25,6 +27,7 @@ def make_chunk_executor(config: dict):
             replan_interval=int(config.get("replan_interval", 5)),
             expected_stale_steps=int(config.get("chunk_expected_stale_steps", config.get("expected_stale_steps", 2))),
             trigger_margin=int(config.get("chunk_trigger_margin", config.get("trigger_margin", 1))),
+            action_dim=action_dim,
         )
     if mode == "temporal_ensemble":
         return TemporalEnsembleExecutor(
@@ -33,6 +36,7 @@ def make_chunk_executor(config: dict):
             weight_type=str(config.get("weight_type", "exponential")),
             decay=float(config.get("decay", 0.25)),
             prefer_newer_predictions=bool(config.get("prefer_newer_predictions", True)),
+            action_dim=action_dim,
         )
     if mode == "rtc":
         return RTCExecutor(**config.get("rtc", {}))

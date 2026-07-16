@@ -12,12 +12,14 @@ class RecedingHorizonExecutor(FixedChunkExecutor):
         replan_interval: int = 5,
         expected_stale_steps: int = 0,
         trigger_margin: int = 0,
+        action_dim: int = 7,
     ) -> None:
         super().__init__(
             chunk_size=chunk_size,
             execution_horizon=execution_horizon,
             expected_stale_steps=expected_stale_steps,
             trigger_margin=trigger_margin,
+            action_dim=action_dim,
         )
         self.replan_interval = replan_interval
         self.last_submit_step = None
