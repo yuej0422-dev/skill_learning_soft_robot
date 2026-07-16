@@ -68,6 +68,12 @@ def main() -> None:
     parser.add_argument("--zed-width", type=int, default=2560)
     parser.add_argument("--zed-height", type=int, default=720)
     parser.add_argument("--zed-fps", type=int, default=30)
+    parser.add_argument(
+        "--cam1-crop-right-fraction",
+        type=float,
+        default=0.0,
+        help="Crop this fraction from the right edge of cam_1 before both inference and preview.",
+    )
     parser.add_argument("--realsense-serial-cam2", default="401522072797")
     parser.add_argument("--realsense-serial-cam3", default="408322072769")
     parser.add_argument("--zed-warmup-usable-frames", type=int, default=10)
@@ -141,6 +147,8 @@ def main() -> None:
         raise SystemExit("--upper-frequency and --control-frequency must be positive.")
     if args.pressure_delta_scale < 0:
         raise SystemExit("--pressure-delta-scale must be non-negative.")
+    if not (0.0 <= args.cam1_crop_right_fraction < 1.0):
+        raise SystemExit("--cam1-crop-right-fraction must be in [0, 1).")
     if args.vla_action_mode == "pressure_delta19" and args.feedforward != "external":
         raise SystemExit("--vla-action-mode pressure_delta19 requires --feedforward external.")
     if args.feedback_gain_scale < 0 or args.feedback_gain_scale > 1.0:
@@ -198,6 +206,7 @@ def main() -> None:
                 zed_width=args.zed_width,
                 zed_height=args.zed_height,
                 zed_fps=args.zed_fps,
+                cam1_crop_right_fraction=args.cam1_crop_right_fraction,
                 realsense_serial_cam2=args.realsense_serial_cam2,
                 realsense_serial_cam3=args.realsense_serial_cam3,
                 zed_warmup_usable_frames=args.zed_warmup_usable_frames,

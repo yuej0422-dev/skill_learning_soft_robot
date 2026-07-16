@@ -61,6 +61,7 @@ class SmolVLAAsyncRuntimeConfig:
     zed_width: int = 2560
     zed_height: int = 720
     zed_fps: int = 30
+    cam1_crop_right_fraction: float = 0.0
     realsense_serial_cam2: str | None = None
     realsense_serial_cam3: str | None = None
     zed_warmup_usable_frames: int = 10
@@ -908,7 +909,7 @@ def smolvla_real_inference_process(
             )
         )
         camera_source.open()
-        if preview_queue is not None:
+        if preview_queue is not None and not _preview_uses_exact_inference_input(config):
             preview_thread = threading.Thread(
                 target=_camera_preview_publisher,
                 args=(config, stop_event, preview_stop, camera_source, preview_queue, preview_stats),
@@ -956,7 +957,17 @@ def smolvla_real_inference_process(
             if config.live_observation:
                 if camera_source is None:
                     raise RuntimeError("live camera source is not initialized")
-                images = camera_source.read_rgb_uint8()
+                images = _apply_inference_image_transforms(camera_source.read_rgb_uint8(), config)
+                if preview_queue is not None and _preview_uses_exact_inference_input(config):
+                    _drain_put(
+                        preview_queue,
+                        {
+                            "monotonic_ns": time.monotonic_ns(),
+                            "images": images,
+                            "source": "exact_inference_input",
+                        },
+                    )
+                    preview_stats["frames"] += 1
                 obs = {
                     key: torch.from_numpy(rgb).permute(2, 0, 1).to(dtype=torch.float32) / 255.0
                     for key, rgb in images.items()
@@ -980,12 +991,14 @@ def smolvla_real_inference_process(
                     samples = iter(source)
                     sample = next(samples)
                 obs = {k: v for k, v in sample.items() if k not in {"action", "action_is_pad"}}
+                obs = _apply_inference_image_transforms(obs, config)
                 if config.vla_action_mode == "pressure_delta19":
                     # Replay mode supplies recorded images, while state/pressure must
                     # still reflect the robot currently controlled by this runtime.
                     observation_state = _build_vla_observation_state(config, latest_state)
                     obs["observation.state"] = torch.as_tensor(observation_state, dtype=torch.float32)
                 observation_source = "lerobot_replay"
+            inference_image_shapes = _inference_image_shapes(obs)
             start_ns = time.monotonic_ns()
             batch = preprocessor(obs)
             device_type = "cuda" if device.startswith("cuda") else "cpu"
@@ -1033,7 +1046,7 @@ def smolvla_real_inference_process(
                 print(
                     f"[soft_vla] first action chunk ready: backend=smolvla, "
                     f"latency_ms={(end_ns - start_ns) / 1_000_000.0:.3f}, "
-                    f"chunk_shape={list(chunk.shape)}",
+                    f"chunk_shape={list(chunk.shape)}, image_shapes={inference_image_shapes}",
                     flush=True,
                 )
             timing.add_ns(end_ns - start_ns)
@@ -1045,6 +1058,8 @@ def smolvla_real_inference_process(
                     "real_policy": True,
                     "live_observation": config.live_observation,
                     "observation_source": observation_source,
+                    "inference_image_shapes": inference_image_shapes,
+                    "cam1_crop_right_fraction": config.cam1_crop_right_fraction,
                     "chunk_shape": list(chunk.shape),
                     "latency_ms": (end_ns - start_ns) / 1_000_000.0,
                     "inference_latency_ms": (end_ns - request_time_ns) / 1_000_000.0,
@@ -1081,6 +1096,7 @@ def smolvla_real_inference_process(
                 "episode_observation_frames": episode_observation_stats["frames"],
                 "episode_observation_errors": episode_observation_stats["errors"],
                 "warmup_ms": warmup_ms,
+                "cam1_crop_right_fraction": config.cam1_crop_right_fraction,
                 "timing": timing.summary(),
             },
         }
@@ -1141,6 +1157,59 @@ def _decode_vla_action(
     return action7, feedforward_pressure12, pressure_delta12
 
 
+def _apply_inference_image_transforms(
+    images: dict[str, Any],
+    config: SmolVLAAsyncRuntimeConfig,
+) -> dict[str, Any]:
+    """Apply custom transforms shared by model inference and camera preview."""
+
+    out = dict(images)
+    key = "observation.images.cam_1"
+    fraction = float(config.cam1_crop_right_fraction)
+    if key not in out or fraction <= 0.0:
+        return out
+    if not (0.0 <= fraction < 1.0):
+        raise ValueError(f"cam1_crop_right_fraction must be in [0, 1), got {fraction}")
+    image = out[key]
+    if not hasattr(image, "shape") or len(image.shape) < 3:
+        raise ValueError(f"{key} must have at least 3 dimensions, got {getattr(image, 'shape', None)}")
+    if isinstance(image, np.ndarray):
+        # Live camera images use HWC; tolerate CHW NumPy replay arrays too.
+        channel_last = int(image.shape[-1]) in {1, 3, 4}
+        width_axis = -2 if channel_last else -1
+        width = int(image.shape[width_axis])
+        keep_width = int(round(width * (1.0 - fraction)))
+        if keep_width <= 0 or keep_width > width:
+            raise ValueError(f"invalid cam_1 crop fraction={fraction} for width={width}")
+        if channel_last:
+            out[key] = image[..., :keep_width, :].copy()
+        else:
+            out[key] = image[..., :keep_width].copy()
+    else:
+        # LeRobot replay tensors use [..., C, H, W] / [C, H, W].
+        width = int(image.shape[-1])
+        keep_width = int(round(width * (1.0 - fraction)))
+        if keep_width <= 0 or keep_width > width:
+            raise ValueError(f"invalid cam_1 crop fraction={fraction} for width={width}")
+        cropped = image[..., :keep_width]
+        out[key] = cropped.contiguous() if hasattr(cropped, "contiguous") else cropped
+    return out
+
+
+def _inference_image_shapes(obs: dict[str, Any]) -> dict[str, list[int]]:
+    return {
+        key: [int(dim) for dim in value.shape]
+        for key, value in obs.items()
+        if key.startswith("observation.images.")
+        and not key.endswith("_is_pad")
+        and hasattr(value, "shape")
+    }
+
+
+def _preview_uses_exact_inference_input(config: SmolVLAAsyncRuntimeConfig) -> bool:
+    return config.vla_action_mode == "pressure_delta19" or float(config.cam1_crop_right_fraction) > 0.0
+
+
 def _camera_preview_publisher(
     config: SmolVLAAsyncRuntimeConfig,
     stop_event,
@@ -1152,8 +1221,15 @@ def _camera_preview_publisher(
     timer = PeriodicTimer(max(0.1, float(config.camera_preview_fps)))
     while not stop_event.is_set() and not preview_stop.is_set():
         try:
-            images = camera_source.read_rgb_uint8()
-            _drain_put(preview_queue, {"monotonic_ns": time.monotonic_ns(), "images": images})
+            images = _apply_inference_image_transforms(camera_source.read_rgb_uint8(), config)
+            _drain_put(
+                preview_queue,
+                {
+                    "monotonic_ns": time.monotonic_ns(),
+                    "images": images,
+                    "source": "camera_monitor",
+                },
+            )
             preview_stats["frames"] += 1
         except Exception:
             preview_stats["errors"] += 1
@@ -1196,6 +1272,7 @@ def camera_preview_process(config: SmolVLAAsyncRuntimeConfig, stop_event, previe
     reason = None
     display_available = True
     window_created = False
+    last_source = None
     fallback_path = None
     if config.log_jsonl:
         fallback_path = Path(config.log_jsonl).parent / "camera_preview_latest.jpg"
@@ -1211,7 +1288,13 @@ def camera_preview_process(config: SmolVLAAsyncRuntimeConfig, stop_event, previe
                 continue
             if item == STOP:
                 break
-            canvas = compose_camera_preview(item["images"], scale=config.camera_preview_scale)
+            last_source = str(item.get("source", "camera"))
+            canvas = compose_camera_preview(
+                item["images"],
+                scale=config.camera_preview_scale,
+                cam1_crop_right_fraction=config.cam1_crop_right_fraction,
+                source=str(item.get("source", "camera")),
+            )
             bgr = cv2.cvtColor(canvas, cv2.COLOR_RGB2BGR)
             if display_available:
                 try:
@@ -1247,20 +1330,38 @@ def camera_preview_process(config: SmolVLAAsyncRuntimeConfig, stop_event, previe
                 "saved": saved,
                 "display_available": display_available,
                 "fallback_path": None if fallback_path is None else str(fallback_path),
+                "source": last_source,
                 "reason": reason,
             },
         }
     )
 
 
-def compose_camera_preview(images: dict[str, np.ndarray], *, scale: float) -> np.ndarray:
+def compose_camera_preview(
+    images: dict[str, np.ndarray],
+    *,
+    scale: float,
+    cam1_crop_right_fraction: float = 0.0,
+    source: str = "camera",
+) -> np.ndarray:
     scale = max(0.05, min(float(scale), 1.0))
-    cam1 = _resize_for_preview(images["observation.images.cam_1"], scale)
-    cam2 = _resize_for_preview(images["observation.images.cam_2"], scale)
-    cam3 = _resize_for_preview(images["observation.images.cam_3"], scale)
+    cam1_input = images["observation.images.cam_1"]
+    cam2_input = images["observation.images.cam_2"]
+    cam3_input = images["observation.images.cam_3"]
+    cam1 = _resize_for_preview(cam1_input, scale)
+    cam2 = _resize_for_preview(cam2_input, scale)
+    cam3 = _resize_for_preview(cam3_input, scale)
     target_width = max(cam1.shape[1], cam2.shape[1] + cam3.shape[1])
-    top = _pad_to_width(_label_preview(cam1, "cam_1 ZED left"), target_width)
-    bottom = np.concatenate([_label_preview(cam2, "cam_2 RealSense"), _label_preview(cam3, "cam_3 RealSense")], axis=1)
+    crop_percent = 100.0 * float(cam1_crop_right_fraction)
+    source_label = "INFERENCE INPUT" if source == "exact_inference_input" else source.upper()
+    top_label = (
+        f"cam_1 ZED | {source_label} | {cam1_input.shape[1]}x{cam1_input.shape[0]} "
+        f"| right crop {crop_percent:.0f}%"
+    )
+    cam2_label = f"cam_2 RealSense | {source_label} | {cam2_input.shape[1]}x{cam2_input.shape[0]}"
+    cam3_label = f"cam_3 RealSense | {source_label} | {cam3_input.shape[1]}x{cam3_input.shape[0]}"
+    top = _pad_to_width(_label_preview(cam1, top_label), target_width)
+    bottom = np.concatenate([_label_preview(cam2, cam2_label), _label_preview(cam3, cam3_label)], axis=1)
     bottom = _pad_to_width(bottom, target_width)
     return np.concatenate([top, bottom], axis=0)
 
@@ -1278,8 +1379,8 @@ def _label_preview(rgb: np.ndarray, label: str) -> np.ndarray:
     import cv2
 
     out = rgb.copy()
-    cv2.rectangle(out, (0, 0), (min(out.shape[1], 260), 26), (0, 0, 0), thickness=-1)
-    cv2.putText(out, label, (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+    cv2.rectangle(out, (0, 0), (out.shape[1], 28), (0, 0, 0), thickness=-1)
+    cv2.putText(out, label, (8, 19), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 255), 1, cv2.LINE_AA)
     return out
 
 

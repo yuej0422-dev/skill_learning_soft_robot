@@ -16,6 +16,8 @@ set -euo pipefail
 #
 # 频率关系：上层默认10Hz；每次生成的 target state 和 VLA前馈在底层50Hz的5个周期内保持不变；
 # Koopman闭环修正仍在每个50Hz周期根据最新状态重新计算。
+# 该轮训练的 cam_1/ZED 主视角在进入模型前裁掉右侧20%：1280x720 -> 1024x720；
+# 推理与 CAMERA_PREVIEW 共用同一裁剪结果，预览显示的就是实际送入推理预处理器的三路图像。
 #
 # K 的生成与使用：
 #   FEEDBACK=fixed_k_integral 且 FIXED_K_PATH 为空时，会在控制进程启动阶段求解一次积分LQR的K；
@@ -89,6 +91,7 @@ ZED_EYE=${ZED_EYE:-left}
 ZED_WIDTH=${ZED_WIDTH:-2560}
 ZED_HEIGHT=${ZED_HEIGHT:-720}
 ZED_FPS=${ZED_FPS:-30}
+CAM1_CROP_RIGHT_FRACTION=${CAM1_CROP_RIGHT_FRACTION:-0.2}  # 与本轮训练一致：裁掉cam_1右侧1/5
 REALSENSE_SERIAL_CAM2=${REALSENSE_SERIAL_CAM2:-401522072797}
 REALSENSE_SERIAL_CAM3=${REALSENSE_SERIAL_CAM3:-408322072769}
 ZED_WARMUP_USABLE_FRAMES=${ZED_WARMUP_USABLE_FRAMES:-10}
@@ -98,7 +101,7 @@ INITIAL_GRIPPER_OPEN=${INITIAL_GRIPPER_OPEN:-1}
 GRIPPER_CLOSE_THRESHOLD=${GRIPPER_CLOSE_THRESHOLD:-0.1}
 GRIPPER_OPEN_THRESHOLD=${GRIPPER_OPEN_THRESHOLD:-0.995}
 CAMERA_PREVIEW_SCALE=${CAMERA_PREVIEW_SCALE:-0.5}
-CAMERA_PREVIEW_FPS=${CAMERA_PREVIEW_FPS:-10}
+CAMERA_PREVIEW_FPS=${CAMERA_PREVIEW_FPS:-10}  # 本模式预览随实际VLA推理帧刷新，不额外抓取原始帧
 CAMERA_PREVIEW_WINDOW=${CAMERA_PREVIEW_WINDOW:-soft_vla_pressure_state_live_cameras}
 
 # ===== 数据与日志 =====
@@ -169,6 +172,7 @@ args=(
   --zed-width "$ZED_WIDTH"
   --zed-height "$ZED_HEIGHT"
   --zed-fps "$ZED_FPS"
+  --cam1-crop-right-fraction "$CAM1_CROP_RIGHT_FRACTION"
   --zed-warmup-usable-frames "$ZED_WARMUP_USABLE_FRAMES"
   --realsense-warmup-usable-frames "$REALSENSE_WARMUP_USABLE_FRAMES"
   --min-realsense-mean "$MIN_REALSENSE_MEAN"
@@ -194,4 +198,5 @@ args=(
 echo "[soft_vla] pressure-state deployment: checkpoint=$CHECKPOINT"
 echo "[soft_vla] frequencies: VLA/target=${UPPER_FREQUENCY}Hz, Koopman/control=${CONTROL_FREQUENCY}Hz (zero-order hold)"
 echo "[soft_vla] pressure: feedforward=clip(current+delta,0,1), feedback=$FEEDBACK, gain=$FEEDBACK_GAIN_SCALE"
+echo "[soft_vla] cam_1 preprocessing: crop_right_fraction=$CAM1_CROP_RIGHT_FRACTION; preview shows exact inference inputs"
 "$PY" "${args[@]}"

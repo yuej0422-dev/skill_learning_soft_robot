@@ -11,8 +11,11 @@ from soft_vla.real_robot.safety_manager import SafetyLimits, SafetyManager
 from soft_vla.runtime.shared_state import UpperAction
 from soft_vla.runtime.smolvla_async_runtime import (
     SmolVLAAsyncRuntimeConfig,
+    _apply_inference_image_transforms,
     _build_vla_observation_state,
     _decode_vla_action,
+    _inference_image_shapes,
+    _preview_uses_exact_inference_input,
 )
 
 
@@ -108,6 +111,42 @@ class PressureStateVLADeployTest(unittest.TestCase):
         np.testing.assert_allclose(command.debug["feedforward_action12"], 0.4)
         np.testing.assert_allclose(command.debug["closed_loop_delta_action12"], 0.05)
         np.testing.assert_allclose(command.motion_norm12, 0.45)
+
+    def test_cam1_live_image_crop_matches_training_1280_to_1024(self):
+        config = SmolVLAAsyncRuntimeConfig(cam1_crop_right_fraction=0.2)
+        cam1 = np.arange(1280, dtype=np.uint16)[None, :, None]
+        cam1 = np.broadcast_to(cam1, (720, 1280, 3)).copy()
+        images = {
+            "observation.images.cam_1": cam1,
+            "observation.images.cam_2": np.zeros((480, 640, 3), dtype=np.uint8),
+            "observation.images.cam_3": np.zeros((480, 640, 3), dtype=np.uint8),
+        }
+        transformed = _apply_inference_image_transforms(images, config)
+        self.assertEqual(transformed["observation.images.cam_1"].shape, (720, 1024, 3))
+        np.testing.assert_array_equal(transformed["observation.images.cam_1"], cam1[:, :1024])
+        self.assertEqual(images["observation.images.cam_1"].shape, (720, 1280, 3))
+        self.assertEqual(
+            _inference_image_shapes(transformed)["observation.images.cam_1"],
+            [720, 1024, 3],
+        )
+
+    def test_cam1_replay_tensor_uses_the_same_right_crop(self):
+        import torch
+
+        config = SmolVLAAsyncRuntimeConfig(cam1_crop_right_fraction=0.2)
+        cam1 = torch.arange(1280, dtype=torch.float32).reshape(1, 1, 1280).expand(3, 720, 1280)
+        transformed = _apply_inference_image_transforms({"observation.images.cam_1": cam1}, config)
+        cropped = transformed["observation.images.cam_1"]
+        self.assertEqual(tuple(cropped.shape), (3, 720, 1024))
+        torch.testing.assert_close(cropped, cam1[..., :1024])
+
+    def test_pressure_state_preview_is_driven_by_exact_inference_frames(self):
+        self.assertTrue(
+            _preview_uses_exact_inference_input(
+                SmolVLAAsyncRuntimeConfig(vla_action_mode="pressure_delta19", cam1_crop_right_fraction=0.2)
+            )
+        )
+        self.assertFalse(_preview_uses_exact_inference_input(SmolVLAAsyncRuntimeConfig()))
 
 
 if __name__ == "__main__":
