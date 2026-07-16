@@ -13,6 +13,9 @@ export LD_LIBRARY_PATH="/home/cao/miniconda3/envs/soft_vla_cuda/lib:${LD_LIBRARY
 #   3) 离线临时生成固定 K：FEEDBACK=fixed_k_integral bash soft_vla/scripts/epis_replay.sh
 #   4) 调 Q/R 后生成固定 K：Q_TCP6_WEIGHT=2 R_WEIGHT=50 FEEDBACK=fixed_k_integral bash soft_vla/scripts/epis_replay.sh
 #   5) 改输出目录名：RUN_LABEL=Qlearning FEEDFORWARD=awac bash soft_vla/scripts/epis_replay.sh
+#   6) 上层1Hz、发送3次target：TARGET_FREQUENCY=1 MAX_FRAMES=3 bash soft_vla/scripts/epis_replay.sh
+#   7) 上层0.1Hz、发送2次target：TARGET_FREQUENCY=0.1 MAX_FRAMES=2 bash soft_vla/scripts/epis_replay.sh
+# 输出图与 Full-A 入口一致：第三个子图为闭环控制律的12路 delta action。
 
 cd "$ROOT"
 
@@ -24,7 +27,7 @@ FEEDBACK=${FEEDBACK:-integral_lqr}          # integral_lqr / fixed_k_integral
 RUN_LABEL=${RUN_LABEL:-"${FEEDFORWARD}_${FEEDBACK}"}  # 输出子目录名
 OUTPUT_DIR=${OUTPUT_DIR:-"$ROOT/soft_vla/tests/tmp/$RUN_LABEL"}
 EPISODE_INDEX=${EPISODE_INDEX:-0}           # LeRobot episode index
-MAX_FRAMES=${MAX_FRAMES:-0}                 # <=0 表示完整 episode；>0 表示只回放前 N 帧
+MAX_FRAMES=${MAX_FRAMES:-0}                 # target-state发送次数；<=0 表示完整 episode
 LOG_JSONL=${LOG_JSONL:-"$OUTPUT_DIR/soft_vla_replay_real_ep${EPISODE_INDEX}.jsonl"}
 PLOT_PATH=${PLOT_PATH:-"$OUTPUT_DIR/soft_vla_replay_real_ep${EPISODE_INDEX}.png"}
 SUMMARY_PATH=${SUMMARY_PATH:-"$OUTPUT_DIR/soft_vla_replay_real_ep${EPISODE_INDEX}_summary.json"}
@@ -34,6 +37,10 @@ DEVICE=${DEVICE:-cuda}
 PORT=${PORT:-/dev/serial/by-id/usb-1a86_USB2.0-Ser_-if00-port0}
 LUMO_IP=${LUMO_IP:-192.168.140.1}
 RIGID_BODY_ID=${RIGID_BODY_ID:-1}
+
+# ===== 控制频率 =====
+FREQUENCY=${FREQUENCY:-50}                  # 底层闭环频率
+TARGET_FREQUENCY=${TARGET_FREQUENCY:-10}    # 上层target-state频率：10 / 1 / 0.1 Hz
 
 # ===== 策略输出与压力缩放 =====
 DELTA_TCP_SCALE=${DELTA_TCP_SCALE:-1}       # target delta TCP 缩放
@@ -85,6 +92,8 @@ args=(
   --q-latent-weight "$Q_LATENT_WEIGHT"
   --q-integral-weight "$Q_INTEGRAL_WEIGHT"
   --r-weight "$R_WEIGHT"
+  --frequency "$FREQUENCY"
+  --target-frequency "$TARGET_FREQUENCY"
   --device "$DEVICE"
   --log-jsonl "$LOG_JSONL"
   --plot-path "$PLOT_PATH"
