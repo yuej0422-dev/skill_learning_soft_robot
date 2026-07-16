@@ -44,7 +44,7 @@ class MotionControlRuntime:
                 raise ValueError("lifted_error is required when feedback controller is enabled")
             feedback = self.feedback.predict(lifted_error)
         motion_norm = np.asarray(ff, dtype=np.float32).reshape(12) + np.asarray(feedback, dtype=np.float32).reshape(12)
-        return self.safety.build_pressure_command(
+        command = self.safety.build_pressure_command(
             motion_norm12=motion_norm,
             gripper_open=gripper_open,
             now_ns=now_ns,
@@ -53,4 +53,11 @@ class MotionControlRuntime:
             current_state12=current_state12,
             pressure_scale=pressure_scale,
         )
-
+        command.debug.update(
+            {
+                "feedforward_action12": np.asarray(ff, dtype=np.float32).reshape(12).copy(),
+                "closed_loop_delta_action12": np.asarray(feedback, dtype=np.float32).reshape(12).copy(),
+                "pre_safety_action12": motion_norm.copy(),
+            }
+        )
+        return command

@@ -38,8 +38,27 @@ def load_single_point_log(path: str | Path, *, run: str = "latest") -> dict[str,
         action12 = np.asarray([row["pressure"][:12] for row in rows], dtype=np.float64) / 3.0
     if action12.shape != state.shape:
         raise ValueError(f"expected action shape [T,12], got {action12.shape}")
+    if "closed_loop_delta_action12" in rows[0]:
+        closed_loop_delta_action12 = np.asarray(
+            [row["closed_loop_delta_action12"] for row in rows], dtype=np.float64
+        )
+        if closed_loop_delta_action12.shape != state.shape:
+            raise ValueError(
+                "expected closed-loop delta action shape "
+                f"[T,12], got {closed_loop_delta_action12.shape}"
+            )
+    else:
+        # Keep historical logs loadable. NaN makes the missing signal explicit
+        # instead of incorrectly deriving feedback from the final pressure.
+        closed_loop_delta_action12 = np.full_like(state, np.nan, dtype=np.float64)
     steps = np.asarray([row.get("step", i) for i, row in enumerate(rows)], dtype=np.float64)
-    return {"steps": steps, "state": state, "reference": reference, "action12": action12}
+    return {
+        "steps": steps,
+        "state": state,
+        "reference": reference,
+        "action12": action12,
+        "closed_loop_delta_action12": closed_loop_delta_action12,
+    }
 
 
 def save_single_point_plot(
@@ -54,6 +73,7 @@ def save_single_point_plot(
     time_s = steps / float(frequency)
     error = data["state"] - data["reference"]
     action12 = np.clip(data["action12"], 0.0, 1.0)
+    closed_loop_delta_action12 = data["closed_loop_delta_action12"]
 
     import matplotlib
 
@@ -61,7 +81,7 @@ def save_single_point_plot(
     import matplotlib.pyplot as plt
 
     fig, axes = plt.subplots(2, 2, figsize=(15, 9), constrained_layout=True)
-    ax_xyz, ax_rot, ax_vel, ax_action = axes.ravel()
+    ax_xyz, ax_rot, ax_delta_action, ax_action = axes.ravel()
 
     labels_xyz = ["x", "y", "z"]
     for idx, label in enumerate(labels_xyz):
@@ -83,20 +103,24 @@ def save_single_point_plot(
     ax_rot.grid(True, alpha=0.3)
     ax_rot.legend(ncol=3, fontsize=8)
 
-    linear_vel_error = np.linalg.norm(error[:, 6:9], axis=1)
-    angular_vel_error = np.linalg.norm(error[:, 9:12], axis=1)
-    ax_vel.plot(time_s, linear_vel_error, label="linear norm")
-    ax_vel.axhline(0.0, color="black", linewidth=0.8, alpha=0.4)
-    ax_vel.set_title("Velocity Tracking Error")
-    ax_vel.set_xlabel("time (s)")
-    ax_vel.set_ylabel("linear error (m/s)")
-    ax_vel.grid(True, alpha=0.3)
-    ax_vel_ang = ax_vel.twinx()
-    ax_vel_ang.plot(time_s, angular_vel_error, linestyle="--", color="tab:orange", label="angular norm")
-    ax_vel_ang.set_ylabel("angular error (rad/s)")
-    lines, labels = ax_vel.get_legend_handles_labels()
-    lines_ang, labels_ang = ax_vel_ang.get_legend_handles_labels()
-    ax_vel.legend(lines + lines_ang, labels + labels_ang, ncol=3, fontsize=8)
+    if np.all(np.isnan(closed_loop_delta_action12)):
+        ax_delta_action.text(
+            0.5,
+            0.5,
+            "closed_loop_delta_action12 unavailable\nin this legacy log",
+            ha="center",
+            va="center",
+            transform=ax_delta_action.transAxes,
+        )
+    else:
+        for idx in range(12):
+            ax_delta_action.plot(time_s, closed_loop_delta_action12[:, idx], label=f"du{idx + 1}")
+        ax_delta_action.legend(ncol=4, fontsize=7)
+    ax_delta_action.axhline(0.0, color="black", linewidth=0.8, alpha=0.4)
+    ax_delta_action.set_title("Closed-loop Delta Action (LQR Feedback)")
+    ax_delta_action.set_xlabel("time (s)")
+    ax_delta_action.set_ylabel("normalized pressure delta")
+    ax_delta_action.grid(True, alpha=0.3)
 
     for idx in range(12):
         ax_action.plot(time_s, action12[:, idx], label=f"u{idx + 1}")
