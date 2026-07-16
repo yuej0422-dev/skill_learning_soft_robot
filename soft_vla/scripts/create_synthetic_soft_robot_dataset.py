@@ -43,7 +43,7 @@ def main() -> int:
     except Exception as exc:
         raise RuntimeError(
             "LeRobot is required to create an official LeRobotDataset. "
-            "Use the existing /home/yuej/miniconda3/envs/lerobot_v3_convert/bin/python "
+            "Use the existing /home/cao/miniconda3/envs/lerobot_v3_convert/bin/python "
             "or create environment.cuda.yml."
         ) from exc
 

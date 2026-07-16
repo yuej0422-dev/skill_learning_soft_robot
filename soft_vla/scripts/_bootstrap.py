@@ -9,5 +9,7 @@ def add_src_to_path() -> Path:
     src = project_root / "src"
     if str(src) not in sys.path:
         sys.path.insert(0, str(src))
+    repo_root = project_root.parent
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
     return project_root
-

@@ -1,6 +1,6 @@
 dataset:
   config: configs/dataset.real_records_7_03_1_delta_tcp.yaml
-  root: /home/yuej/skill_learning_soft_robot/lerobot_conversion/outputs/robot_records_7_03_1_delta_tcp
+  root: /home/cao/skill_learning_soft_robot/lerobot_conversion/outputs/robot_records_7_03_1_delta_tcp
   episodes: [0, 1]
   video_backend: pyav
 

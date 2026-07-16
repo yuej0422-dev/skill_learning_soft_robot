@@ -15,12 +15,16 @@ def make_chunk_executor(config: dict):
         return FixedChunkExecutor(
             chunk_size=int(config.get("chunk_size", 50)),
             execution_horizon=int(config.get("execution_horizon", 10)),
+            expected_stale_steps=int(config.get("chunk_expected_stale_steps", config.get("expected_stale_steps", 2))),
+            trigger_margin=int(config.get("chunk_trigger_margin", config.get("trigger_margin", 1))),
         )
     if mode == "receding_horizon":
         return RecedingHorizonExecutor(
             chunk_size=int(config.get("chunk_size", 50)),
             execution_horizon=int(config.get("execution_horizon", 5)),
             replan_interval=int(config.get("replan_interval", 5)),
+            expected_stale_steps=int(config.get("chunk_expected_stale_steps", config.get("expected_stale_steps", 2))),
+            trigger_margin=int(config.get("chunk_trigger_margin", config.get("trigger_margin", 1))),
         )
     if mode == "temporal_ensemble":
         return TemporalEnsembleExecutor(
@@ -33,4 +37,3 @@ def make_chunk_executor(config: dict):
     if mode == "rtc":
         return RTCExecutor(**config.get("rtc", {}))
     raise ValueError(f"unknown chunk execution mode: {mode}")
-

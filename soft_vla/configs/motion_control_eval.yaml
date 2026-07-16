@@ -1,0 +1,55 @@
+dataset:
+  root: /home/cao/skill_learning_soft_robot/lerobot_conversion/outputs/robot_records_7_03_1_delta_tcp
+  episode_index: 0
+  replay_frequency: 10
+  start_frame: 0
+  end_frame: null
+
+runtime:
+  upper_frequency: 10
+  control_frequency: 50
+  realtime: true
+  dry_run: true
+
+feedforward:
+  type: pressure_model
+  checkpoint: /home/cao/skill_learning_soft_robot/motion_control_training/feedforward_pressure/runs/optimized_state12_raw_pressure/best.pt
+  awac_checkpoint: /home/cao/skill_learning_soft_robot/motion_control_training/KORL/runs/feedforward/awac_quadq_2k_eval_2x256/best.pt
+  device: cpu
+
+feedback:
+  type: integral_lqr
+  koopman_checkpoint: /home/cao/skill_learning_soft_robot/motion_control_training/koopman/runs/robot_records_7_03_1_delta_tcp_10hz_to_50hz_k50_epoch1500_wandb_online_20260706_2159/best.pt
+  fixed_k_path: null
+  integral_limit: 0.5
+  feedback_gain_scale: 0.2
+  q_tcp6_weight: 1.0
+  q_state_tail_weight: 0.1
+  q_latent_weight: 0.1
+  q_integral_weight: 0.5
+  r_weight: 10.0
+
+reference:
+  interpolation: linear
+  delta_tcp_scale: 0.2
+  max_delta_tcp: [0.02, 0.02, 0.02, 0.08, 0.08, 0.08]
+
+pressure:
+  min: 0.0
+  max: 3.0
+  pressure_scale: 0.5
+  slew_rate_limit: 6.0
+  packet_channels: 16
+
+safety:
+  state_timeout: 0.1
+  command_timeout: 0.25
+  enable_watchdog: true
+  initial_pressure: 0.0
+
+hardware:
+  enabled: false
+  serial_port: COM3
+  baudrate: 115200
+  lumo_ip: 192.168.140.1
+  rigid_body_id: 1

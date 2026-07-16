@@ -22,6 +22,7 @@ try:
         load_lerobot_state_stats,
         make_output_dir,
         normalize_rewards,
+        parse_float_list,
         parse_hidden_sizes,
         parse_int_list,
         resolve_device,
@@ -39,6 +40,7 @@ except ImportError:  # pragma: no cover - direct script execution
         load_lerobot_state_stats,
         make_output_dir,
         normalize_rewards,
+        parse_float_list,
         parse_hidden_sizes,
         parse_int_list,
         resolve_device,
@@ -280,10 +282,22 @@ def train(args: argparse.Namespace) -> Path:
     episodes, pressure_meta = load_episode_arrays(dataset_root, state_indices, pressure_indices)
     train_episodes, val_episodes = split_episodes(sorted(episodes), args.val_ratio, args.seed)
     train_dataset, train_stats = build_transition_dataset(
-        episodes, train_episodes, state_mean, state_std, args.target_offset, args.reward_scale
+        episodes,
+        train_episodes,
+        state_mean,
+        state_std,
+        args.target_offset,
+        args.reward_scale,
+        parse_float_list(args.reward_state_weights),
     )
     val_dataset, val_stats = build_transition_dataset(
-        episodes, val_episodes, state_mean, state_std, args.target_offset, args.reward_scale
+        episodes,
+        val_episodes,
+        state_mean,
+        state_std,
+        args.target_offset,
+        args.reward_scale,
+        parse_float_list(args.reward_state_weights),
     )
     reward_norm_stats = normalize_rewards(train_dataset) if args.normalize_reward else {}
     if args.normalize_reward and reward_norm_stats["reward_std_before_norm"] > 1e-6:
@@ -312,6 +326,8 @@ def train(args: argparse.Namespace) -> Path:
         "train_dataset": train_stats,
         "val_dataset": val_stats,
         "reward_normalization": reward_norm_stats,
+        "reward_type": train_stats["reward_type"],
+        "reward_state_weights": train_stats["reward_state_weights"],
         "action_low": action_low.tolist(),
         "action_high": action_high.tolist(),
     }
@@ -390,6 +406,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--pressure-indices", type=str, default="0:12")
     parser.add_argument("--target-offset", type=int, default=5)
     parser.add_argument("--reward-scale", type=float, default=1.0)
+    parser.add_argument("--reward-state-weights", type=str, default="1,1,1,1,1,1,0,0,0,0,0,0")
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=512)
     parser.add_argument("--device", type=str, default="auto")

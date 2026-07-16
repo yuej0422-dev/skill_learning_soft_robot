@@ -30,6 +30,11 @@ class ChunkExecutor(Protocol):
         observation_timestamp: float,
         inference_start_timestamp: float,
         inference_end_timestamp: float,
+        *,
+        request_tick: int | None = None,
+        result_tick: int | None = None,
+        next_dispatch_tick: int | None = None,
+        drop_stale_actions: bool = True,
     ) -> None: ...
 
     def get_action(self, control_step: int, control_timestamp: float) -> ActionRecord: ...
@@ -48,8 +53,7 @@ def as_chunk(chunk) -> np.ndarray:
     return arr
 
 
-def safe_fallback(last_gripper: float = 0.0) -> np.ndarray:
+def safe_fallback(last_gripper: float = 1.0) -> np.ndarray:
     action = np.zeros(7, dtype=np.float32)
     action[6] = 1.0 if last_gripper >= 0.5 else 0.0
     return action
-

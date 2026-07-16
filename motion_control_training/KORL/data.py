@@ -40,6 +40,10 @@ def parse_hidden_sizes(spec: str) -> list[int]:
     return [int(item) for item in spec.split(",") if item.strip()]
 
 
+def parse_float_list(spec: str) -> list[float]:
+    return [float(item) for item in spec.split(",") if item.strip()]
+
+
 def load_json(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
@@ -152,6 +156,7 @@ def build_transition_dataset(
     state_std: np.ndarray,
     target_offset: int,
     reward_scale: float = 1.0,
+    reward_state_weights: Sequence[float] | None = None,
 ) -> tuple[dict[str, np.ndarray], dict[str, float | int]]:
     observations: list[np.ndarray] = []
     actions: list[np.ndarray] = []
@@ -161,6 +166,15 @@ def build_transition_dataset(
     skipped_short = 0
 
     state_std = np.maximum(state_std.astype(np.float32), 1e-6)
+    if reward_state_weights is None:
+        reward_weights = np.zeros_like(state_std, dtype=np.float32)
+        reward_weights[: min(6, reward_weights.shape[0])] = 1.0
+    else:
+        reward_weights = np.asarray(reward_state_weights, dtype=np.float32)
+        if reward_weights.shape != state_std.shape:
+            raise ValueError(
+                f"reward_state_weights shape {reward_weights.shape} does not match state shape {state_std.shape}."
+            )
     for episode in episode_ids:
         states, pressures = episodes[int(episode)]
         max_start = len(states) - target_offset - 1
@@ -174,8 +188,9 @@ def build_transition_dataset(
             observations.append(np.concatenate([norm_states[t], target_t], axis=0))
             actions.append(pressures[t])
             next_observations.append(np.concatenate([norm_states[t + 1], target_next], axis=0))
-            distance = np.linalg.norm(norm_states[t + 1] - target_t)
-            rewards.append(float(-reward_scale * distance))
+            state_error = norm_states[t + 1] - target_t
+            quadratic_cost = float(np.sum(reward_weights * np.square(state_error)))
+            rewards.append(float(-reward_scale * quadratic_cost))
             terminals.append(float(t == max_start - 1))
 
     if not observations:
@@ -194,6 +209,8 @@ def build_transition_dataset(
         "transitions": int(dataset["observations"].shape[0]),
         "reward_mean": float(dataset["rewards"].mean()),
         "reward_std": float(dataset["rewards"].std()),
+        "reward_type": "-state_error^T Q state_error",
+        "reward_state_weights": reward_weights.tolist(),
     }
     return dataset, stats
 

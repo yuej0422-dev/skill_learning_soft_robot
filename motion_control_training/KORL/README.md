@@ -17,6 +17,17 @@ Each observation is:
 The default future target uses `--target-offset 5`. The action is the 12-dim raw
 pressure vector from `meta/extra/raw_pressure_metadata.json`.
 
+The transition reward is a quadratic tracking reward:
+
+```text
+e = normalized_next_state - normalized_target_state
+r = - e^T Q e
+```
+
+By default `Q = diag([1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0])`, so the first six
+position/angle state dimensions are rewarded and the six velocity dimensions
+are ignored. Override with `--reward-state-weights`.
+
 ## Feedforward AWAC
 
 ```bash

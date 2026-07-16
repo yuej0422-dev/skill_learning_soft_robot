@@ -1,6 +1,6 @@
 dataset:
   source: local
-  root: /home/yuej/skill_learning_soft_robot/lerobot_conversion/outputs/robot_records_7_03_1_delta_tcp
+  root: /home/cao/skill_learning_soft_robot/lerobot_conversion/outputs/robot_records_7_03_1_delta_tcp
   repo_id: local/soft_robot_7_03_1_delta_tcp
   split: train
   video_backend: pyav

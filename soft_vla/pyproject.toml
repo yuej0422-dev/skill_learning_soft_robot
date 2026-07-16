@@ -10,9 +10,10 @@ requires-python = ">=3.10"
 dependencies = [
   "numpy",
   "pillow",
+  "protobuf",
+  "pyzmq",
   "pyyaml",
 ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
-

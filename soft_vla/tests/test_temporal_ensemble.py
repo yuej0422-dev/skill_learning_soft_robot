@@ -21,7 +21,17 @@ class TemporalEnsembleTest(unittest.TestCase):
         self.assertEqual(len(rec2.debug["actions"]), 1)
         self.assertAlmostEqual(float(rec2.action[0]), 1.0)
 
+    def test_gripper_is_thresholded_after_weighted_vote(self):
+        ex = TemporalEnsembleExecutor(weight_type="uniform")
+        c0 = np.zeros((2, 7), dtype=np.float32)
+        c1 = np.zeros((2, 7), dtype=np.float32)
+        c1[:, 6] = 1.0
+        ex.submit_chunk(c0, observation_timestamp=0, inference_start_timestamp=0, inference_end_timestamp=0)
+        ex.submit_chunk(c1, observation_timestamp=0, inference_start_timestamp=0, inference_end_timestamp=0)
+        rec = ex.get_action(0, 0.0)
+        self.assertIn(float(rec.action[6]), (0.0, 1.0))
+        self.assertEqual(float(rec.action[6]), 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()
-

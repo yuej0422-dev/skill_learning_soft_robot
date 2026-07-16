@@ -1,0 +1,30 @@
+dataset:
+  root: /home/cao/skill_learning_soft_robot/lerobot_conversion/outputs/robot_records_7_03_1_delta_tcp
+  episode_index: 0
+
+runtime:
+  upper_frequency: 10
+  control_frequency: 50
+  realtime: true
+  dry_run: true
+
+motion_control:
+  config: configs/motion_control_eval.yaml
+
+smolvla:
+  enabled: false
+  checkpoint: /home/cao/skill_learning_soft_robot/soft_vla/outputs/full_runs/smolvla_full_full20000_bs8_20260704_180614/checkpoints/020000/pretrained_model
+  mode: receding_horizon
+  chunk_size: 50
+  execution_horizon: 10
+  replan_interval: 5
+  rtc_enabled: false
+
+queue:
+  min_buffer_actions: 10
+  drop_expired_actions: true
+  clear_on_episode_switch: true
+
+safety:
+  require_motion_control_validated: true
+  allow_single_step_real_time: false

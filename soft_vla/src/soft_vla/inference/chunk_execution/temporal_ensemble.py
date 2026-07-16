@@ -35,19 +35,33 @@ class TemporalEnsembleExecutor:
     def reset(self) -> None:
         self.history: list[HistoricalChunk] = []
         self.chunk_id = -1
-        self.last_gripper = 0.0
+        self.last_gripper = 1.0
         self.underruns = 0
 
-    def submit_chunk(self, chunk, observation_timestamp: float, inference_start_timestamp: float, inference_end_timestamp: float) -> None:
+    def submit_chunk(
+        self,
+        chunk,
+        observation_timestamp: float,
+        inference_start_timestamp: float,
+        inference_end_timestamp: float,
+        *,
+        request_tick: int | None = None,
+        result_tick: int | None = None,
+        next_dispatch_tick: int | None = None,
+        drop_stale_actions: bool = True,
+    ) -> None:
         arr = as_chunk(chunk)
         self.chunk_id += 1
-        start_step = int(round(observation_timestamp))
+        start_step = int(round(observation_timestamp)) if request_tick is None else int(request_tick)
         self.history.append(HistoricalChunk(self.chunk_id, start_step, arr.copy()))
         self.history = self.history[-self.max_history_chunks :]
         self.timing = {
             "observation_timestamp": observation_timestamp,
             "inference_start_timestamp": inference_start_timestamp,
             "inference_end_timestamp": inference_end_timestamp,
+            "request_tick": start_step,
+            "result_tick": result_tick,
+            "next_dispatch_tick": next_dispatch_tick,
         }
 
     def _weights(self, ages: np.ndarray) -> np.ndarray:
@@ -81,6 +95,8 @@ class TemporalEnsembleExecutor:
         ages_arr = np.asarray(ages, dtype=np.int64)
         weights = self._weights(ages_arr).astype(np.float32)
         fused = np.sum(actions * weights[:, None], axis=0).astype(np.float32)
+        # TCP deltas are continuous, but the gripper is a discrete open/closed command.
+        fused[6] = 1.0 if float(np.sum(actions[:, 6] * weights)) >= 0.5 else 0.0
         self.last_gripper = float(fused[6])
         return ActionRecord(
             fused,
@@ -89,7 +105,15 @@ class TemporalEnsembleExecutor:
             metadata[-1]["chunk_step"],
             control_step,
             int(ages_arr.min()) if len(ages_arr) else 0,
-            {"weights": weights.tolist(), "ages": ages_arr.tolist(), "actions": actions.tolist(), "metadata": metadata},
+            {
+                "weights": weights.tolist(),
+                "ages": ages_arr.tolist(),
+                "actions": actions.tolist(),
+                "metadata": metadata,
+                "te_num_candidates": len(candidates),
+                "te_candidate_chunk_ids": [item["chunk_id"] for item in metadata],
+                "te_candidate_local_indices": [item["chunk_step"] for item in metadata],
+            },
         )
 
     def needs_replan(self, control_step: int, control_timestamp: float) -> bool:
@@ -97,4 +121,3 @@ class TemporalEnsembleExecutor:
 
     def get_debug_state(self) -> dict:
         return {"mode": "temporal_ensemble", "history": len(self.history), "chunk_id": self.chunk_id, "underruns": self.underruns}
-
