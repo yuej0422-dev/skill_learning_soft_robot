@@ -15,8 +15,12 @@ try:
         define_fullA_history_loss,
     )
     from .train_fullA_history import (
+        DEFAULT_MAT_DATASET_ROOT,
+        HistoryKoopmanWindowDataset,
         build_history_koopman_buffer,
+        compute_state_stats_from_episodes,
         context_at,
+        load_mat_episode_arrays,
         load_checkpoint,
         save_checkpoint,
     )
@@ -28,8 +32,12 @@ except ImportError:  # pragma: no cover
         define_fullA_history_loss,
     )
     from train_fullA_history import (
+        DEFAULT_MAT_DATASET_ROOT,
+        HistoryKoopmanWindowDataset,
         build_history_koopman_buffer,
+        compute_state_stats_from_episodes,
         context_at,
+        load_mat_episode_arrays,
         load_checkpoint,
         save_checkpoint,
     )
@@ -99,6 +107,34 @@ def test_no_cross_episode() -> None:
     for sample in contexts:
         state_values = sample[:, :10]
         assert np.all(state_values < 100) or np.all(state_values > 1000)
+
+
+def test_lazy_dataset_matches_materialized_buffer() -> None:
+    states = np.arange(80, dtype=np.float32).reshape(-1, 1)
+    pressures = (100 + np.arange(80, dtype=np.float32)).reshape(-1, 1)
+    episodes = {0: (states, pressures)}
+    contexts, current_states, controls, targets, stats = build_history_koopman_buffer(
+        episodes,
+        [0],
+        state_mean=np.zeros(1, dtype=np.float32),
+        state_std=np.ones(1, dtype=np.float32),
+        history_steps=10,
+        ksteps=50,
+    )
+    dataset = HistoryKoopmanWindowDataset(
+        episodes,
+        [0],
+        state_mean=np.zeros(1, dtype=np.float32),
+        state_std=np.ones(1, dtype=np.float32),
+        history_steps=10,
+        ksteps=50,
+    )
+    assert len(dataset) == contexts.shape[0] == stats["windows"]
+    lazy_contexts, lazy_states, lazy_controls, lazy_targets = dataset[0]
+    np.testing.assert_allclose(lazy_contexts, contexts[0])
+    np.testing.assert_allclose(lazy_states, current_states[0])
+    np.testing.assert_allclose(lazy_controls, controls[0])
+    np.testing.assert_allclose(lazy_targets, targets[0])
 
 
 def test_model_shapes() -> None:
@@ -217,14 +253,41 @@ def test_checkpoint_roundtrip() -> None:
         torch.testing.assert_close(value.cpu(), loaded.state_dict()[key].cpu())
 
 
+def test_real_mat_loader_if_available() -> None:
+    if not DEFAULT_MAT_DATASET_ROOT.exists():
+        return
+    episodes, diagnostics = load_mat_episode_arrays(
+        DEFAULT_MAT_DATASET_ROOT,
+        state_indices=list(range(12)),
+        pressure_indices=list(range(12)),
+        state_key="X",
+        pressure_key="U",
+    )
+    assert len(episodes) == 480
+    states, actions = episodes[0]
+    assert states.shape == (400, 12)
+    assert actions.shape == (400, 12)
+    assert np.isfinite(states).all()
+    assert np.isfinite(actions).all()
+    assert float(actions.min()) >= 0.0
+    assert float(actions.max()) <= 1.0
+    assert diagnostics["timing_overrun_sum"] == 0
+    mean, std = compute_state_stats_from_episodes({0: episodes[0], 1: episodes[1]}, norm_eps=1e-6)
+    assert mean.shape == (12,)
+    assert std.shape == (12,)
+    assert np.all(std > 0.0)
+
+
 def main() -> None:
     test_history_window_timing()
     test_no_cross_episode()
+    test_lazy_dataset_matches_materialized_buffer()
     test_model_shapes()
     test_linear_loss_zero_and_positive()
     test_fullA_gradients()
     test_target_std_loss()
     test_checkpoint_roundtrip()
+    test_real_mat_loader_if_available()
     print("All Full-A history v2 tests passed.")
 
 

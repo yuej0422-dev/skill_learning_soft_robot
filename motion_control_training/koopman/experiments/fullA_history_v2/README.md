@@ -1,59 +1,85 @@
 # Full-A History Koopman v2
 
-This experiment is a minimal, isolated extension of the legacy Koopman trainer.
-It keeps the original open-loop rollout loss structure while changing only the
-requested parts: 10 Hz data, history-context encoder, full `A`, stability loss,
-target-std anti-collapse loss, disabled augment loss, and disabled SVD loss by
-default.
+This experiment trains a history-context Deep Koopman model with a full
+trainable `A` matrix. The legacy rollout loss is preserved: `linear_loss` is
+computed on the full lifted state, and `pred_loss` is computed on the physical
+state slice.
 
-The legacy files are not modified:
+The original Koopman files are not modified:
 
 ```text
 motion_control_training/koopman/model.py
 motion_control_training/koopman/train_koopman_lerobot.py
 ```
 
-## Audit Of Previous Attempt
+## Current Data
 
-The previous `fullA_history` attempt was removed because it deviated from the
-new spec:
-
-```text
-linear_loss was split into latent-only loss instead of full lifted-state loss
-koopman_lam default was changed to 1.0 instead of preserving 10.0
-the 50 epoch real-data run used ksteps=10 instead of required ksteps=50
-metrics used state_pred/latent_linear names instead of legacy linear/pred loss
-```
-
-This v2 implementation restores the legacy `linear_loss + pred_loss` design.
-
-## Files
+Default dataset:
 
 ```text
-model_fullA_history.py   Full-A history-context Koopman model and legacy-style loss
-train_fullA_history.py   10 Hz data loader, window builder, trainer, checkpoints
-test_fullA_history.py    Timing, no interpolation, loss, gradient, checkpoint tests
-README.md               This experiment note
+/home/yuej/skill_learning_soft_robot/data_collection/koopman_pressure16
 ```
 
-## Data And Timing
+The trainer supports `--dataset-format auto|mat|lerobot`. For this MAT dataset:
+
+```text
+state_key = X
+action_key = U
+n_state = 12
+u_dim = 12
+frequency_hz = 50
+upsample_factor = 1
+```
+
+State is normalized with mean/std computed from the selected MAT state columns.
+Action is not normalized; `U[:, 0:12]` is already in `[0, 1]`.
+
+The MAT reader does not require scipy. It reads numeric MATLAB v5 variables
+directly, including compressed variables written by `scipy.io.savemat`.
+
+## Data Check
+
+Checked on the current dataset:
+
+```text
+mat_files = 480
+episode_len = 400 for every episode
+selected state shape = [400, 12]
+selected action shape = [400, 12]
+action range = [0, 1]
+NaN/Inf = none
+timing_overrun_sum = 0
+zero_velocity_rows_lt_1e-8 = 0
+identical_consecutive_state_rows_lt_1e-9 = 0
+sample_dt_p50 = 0.0200029 s
+sample_dt_p95 = 0.0202436 s
+```
+
+Selected state global ranges:
+
+```text
+min = [-0.1626, 0.5789, -0.0573, -0.5071, -0.2532, -0.7324,
+       -0.4248, -0.1217, -0.2896, -7.1639, -3.6887, -4.5415]
+max = [ 0.2067, 0.8325,  0.2169,  0.8025,  0.2238,  1.0698,
+        0.3871, 0.2336,  0.3976,  9.0839,  3.4357,  4.9037]
+```
+
+## Timing
 
 No interpolation or action hold expansion is used:
 
 ```text
-source_hz = 10
-target_hz = 10
+source_hz = 50
+target_hz = 50
 upsample_factor = 1
 upsample_method = none
 ```
 
-The trainer rejects `--upsample-factor` values other than `1`.
-
 For prediction from `t` to `t+1`:
 
 ```text
-state history  = x[t-9], ..., x[t]
-action history = u[t-10], ..., u[t-1]
+state history  = x[t-history_steps+1], ..., x[t]
+action history = u[t-history_steps], ..., u[t-1]
 current action = u[t]
 ```
 
@@ -61,59 +87,79 @@ Current context:
 
 ```python
 context_t = concat(
-    flatten(x[t-9:t+1]),
-    flatten(u[t-10:t]),
+    flatten(x[t-history_steps+1:t+1]),
+    flatten(u[t-history_steps:t]),
 )
 ```
 
-Next context:
+So `u[t]` is not in `context_t`, but enters the transition and the next
+context. No `x[t+1]` or `u[t+1]` leaks into `context_t`.
 
-```python
-context_next = concat(
-    flatten(x[t-8:t+2]),
-    flatten(u[t-9:t+1]),
-)
-```
+## Default Hyperparameters
 
-So `u[t]` is not in `context_t`, but enters `context_next`. No `x[t+1]` or
-`u[t+1]` leaks into `context_t`.
-
-Default dimensions:
+Current defaults are tuned for the 50 Hz MAT dataset:
 
 ```text
-n_state = 12
-u_dim = 12
-history_steps = 10
-context_dim = 240
-encode_dim = 12
-z_dim = 24
+history_steps = 30
 ksteps = 50
+encode_dim = 36
+hidden_sizes = 512,512,256,128
+batch_size = 4096
+eval_batch_size = 4096
+lr = 3e-4
+gamma = 0.99
+grad_clip = 1.0
+buffer_mode = lazy_window_dataset
+precompute_contexts = true
 ```
 
-`ksteps=50` at 10 Hz is a 5 second open-loop rollout.
-
-## Model
-
-The lifted state is:
+Dimensions with defaults:
 
 ```text
-z_t = [x_t, encoder(context_t)]
+context_dim = 30 * 12 + 30 * 12 = 720
+z_dim = n_state + encode_dim = 48
+A = [48, 48]
+B = [12, 48]
 ```
 
-Full-A row-vector transition:
+## Buffer Memory
+
+Training uses a lazy window dataset by default. It stores normalized episode
+arrays, window indices, and one context cache per episode instead of
+materializing every `[K+1, context_dim]` rollout window.
+
+For the full current MAT dataset:
 
 ```text
-z_next = z @ A + u @ B + bias
-A: [24, 24], initialized as I + 0.001 noise
-B: [12, 24], initialized as 0.01 noise
-bias: [24]
+train_windows = 122880
+val_windows = 30720
+train lazy storage = 404 MB
+val lazy storage = 101 MB
 ```
 
-For row-vector convention:
+This replaces the older full materialized buffer, which could peak at tens of
+GB on CPU because every rollout window was expanded before training.
 
-```python
-A_latent_to_state = A[n_state:, :n_state]
-A_state_to_latent = A[:n_state, n_state:]
+Use this only if the machine is extremely memory constrained:
+
+```bash
+--no-precompute-contexts
+```
+
+That lowers CPU memory further, but batch loading is slower. Keep
+`--num-workers 0` unless you intentionally want worker processes to hold their
+own dataset copies.
+
+Loss weights:
+
+```text
+koopman_lam = 10.0
+pred_lam = 1.0
+stability_lam = 0.01
+std_lam = 0.1
+identity_lam = 0.0001
+svd_lam = 0.0
+augment_lam = 0.0
 ```
 
 ## Loss
@@ -127,9 +173,7 @@ for i in range(ksteps):
     z_current = net.forward(z_current, control_sequence[:, i])
 ```
 
-No true state is re-injected into the prediction path.
-
-Legacy-style full lifted-state linear loss:
+Full lifted-state linear loss:
 
 ```python
 true_next_phi = net.encode_only(context_sequence[:, i + 1])
@@ -137,13 +181,13 @@ z_target = torch.cat([true_next_state, true_next_phi], dim=-1)
 linear_loss += beta * mse(z_current, z_target)
 ```
 
-Physical-state prediction loss is retained separately:
+Physical-state prediction loss:
 
 ```python
 pred_loss += beta * mse(z_current[:, :n_state], true_next_state)
 ```
 
-Both use gamma weighting and are divided by `beta_sum`.
+Both losses are gamma-weighted and divided by `beta_sum`.
 
 Total loss:
 
@@ -155,19 +199,80 @@ loss = 10.0 * linear_loss
      + 0.0001 * identity_loss
 ```
 
-Defaults:
+## Train
 
-```text
-koopman_lam = 10.0
-pred_lam = 1.0
-stability_lam = 0.01
-std_lam = 0.1
-identity_lam = 0.0001
-svd_lam = 0.0
-augment_lam = 0.0
+Short smoke test:
+
+```bash
+conda run -n soft_vla_cuda python motion_control_training/koopman/experiments/fullA_history_v2/train_fullA_history.py \
+  --dataset-root /home/yuej/skill_learning_soft_robot/data_collection/koopman_pressure16 \
+  --dataset-format mat \
+  --source-hz 50 \
+  --target-hz 50 \
+  --upsample-factor 1 \
+  --history-steps 30 \
+  --ksteps 50 \
+  --encode-dim 36 \
+  --hidden-sizes 512,512,256,128 \
+  --batch-size 4096 \
+  --eval-batch-size 4096 \
+  --epochs 2 \
+  --max-train-windows 4096 \
+  --max-val-windows 2048 \
+  --log-every 1 \
+  --patience 0 \
+  --device auto \
+  --run-name smoke_mat50_hist30_edim36_batch4096_lazy
 ```
 
-`augment_loss` is recorded as zero and not used.
+Smoke result:
+
+```text
+device = cuda
+train_windows = 4096
+val_windows = 2048
+epoch 1 val_loss = 3.76243329
+epoch 2 val_loss = 3.35702872
+best_epoch = 2
+```
+
+Output:
+
+```text
+motion_control_training/koopman/experiments/fullA_history_v2/runs/smoke_mat50_hist30_edim36_batch4096_lazy
+```
+
+Full-window one-epoch check:
+
+```bash
+conda run -n soft_vla_cuda python motion_control_training/koopman/experiments/fullA_history_v2/train_fullA_history.py \
+  --dataset-root /home/yuej/skill_learning_soft_robot/data_collection/koopman_pressure16 \
+  --dataset-format mat \
+  --source-hz 50 \
+  --target-hz 50 \
+  --upsample-factor 1 \
+  --history-steps 30 \
+  --ksteps 50 \
+  --encode-dim 36 \
+  --hidden-sizes 512,512,256,128 \
+  --batch-size 4096 \
+  --eval-batch-size 4096 \
+  --epochs 1 \
+  --log-every 1 \
+  --patience 0 \
+  --device auto \
+  --run-name smoke_mat50_hist30_edim36_batch4096_full_lazy_1ep
+```
+
+Result on the current 4090 machine:
+
+```text
+device = cuda
+train_windows = 122880
+val_windows = 30720
+epoch 1 val_loss = 1.47831705
+epoch_seconds = 23.07
+```
 
 ## Tests
 
@@ -186,103 +291,10 @@ All Full-A history v2 tests passed.
 Covered:
 
 ```text
-manual timing with x[t]=t and u[t]=100+t
-no interpolation: processed_frames == original_frames
-no cross-episode windows
-shape checks: context=240, phi=12, z=24, A=[24,24], B=[12,24]
+history timing and no cross-episode windows
+Full-A model shapes and gradients
 linear_loss zero/positive behavior
-Full-A gradients, including A[n_state:, :n_state]
 target-std loss
-checkpoint save/load for model, optimizer, metadata
-```
-
-## 50 Epoch Run
-
-Command:
-
-```bash
-conda run -n soft_vla_cuda python motion_control_training/koopman/experiments/fullA_history_v2/train_fullA_history.py \
-  --dataset-root /home/yuej/skill_learning_soft_robot/lerobot_conversion/outputs/robot_records_7_03_1_delta_tcp \
-  --epochs 50 \
-  --history-steps 10 \
-  --ksteps 50 \
-  --encode-dim 12 \
-  --hidden-sizes 128,128,64 \
-  --batch-size 1024 \
-  --eval-batch-size 1024 \
-  --lr 3e-4 \
-  --gamma 0.99 \
-  --target-std 1.0 \
-  --koopman-lam 10.0 \
-  --pred-lam 1.0 \
-  --stability-lam 0.01 \
-  --std-lam 0.1 \
-  --identity-lam 0.0001 \
-  --svd-lam 0.0 \
-  --augment-lam 0.0 \
-  --spectral-radius-limit 1.0 \
-  --upsample-factor 1 \
-  --device auto \
-  --run-name smoke_fullA_hist10_k50_50ep
-```
-
-Output:
-
-```text
-motion_control_training/koopman/experiments/fullA_history_v2/runs/smoke_fullA_hist10_k50_50ep
-```
-
-Checkpoints:
-
-```text
-best.pt
-last.pt
-```
-
-Best epoch:
-
-```text
-49
-```
-
-Data:
-
-```text
-train_windows = 25999
-val_windows = 6880
-processed_frames == original_frames
-source_hz = target_hz = 10
-upsample_factor = 1
-```
-
-Metrics:
-
-| Metric | Epoch 1 | Best Epoch 49 | Epoch 50 |
-|---|---:|---:|---:|
-| train_loss | 3.91341518 | 1.46089225 | 1.45766503 |
-| val_loss | 3.23798229 | 1.62105027 | 1.62710107 |
-| train_linear_loss | 0.32087185 | 0.12202936 | 0.12176307 |
-| val_linear_loss | 0.26379427 | 0.13567135 | 0.13616821 |
-| train_pred_loss | 0.61267101 | 0.23600129 | 0.23551499 |
-| val_pred_loss | 0.51360438 | 0.26025789 | 0.26129077 |
-| train_std_loss | 0.92025702 | 0.04597261 | 0.04519229 |
-| val_std_loss | 0.86435221 | 0.04078714 | 0.04128138 |
-| train_latent_std_min | 0.02073872 | 0.59095611 | 0.59546315 |
-| train_latent_std_mean | 0.04097532 | 0.80429349 | 0.80556983 |
-| train_latent_std_max | 0.06483263 | 0.89485729 | 0.89646169 |
-| val_latent_std_min | 0.02070734 | 0.60564383 | 0.59954988 |
-| val_latent_std_mean | 0.07077865 | 0.83370523 | 0.83370211 |
-| val_latent_std_max | 0.12964320 | 0.97408966 | 0.97681986 |
-| spectral_radius | 1.00657868 | 0.99913329 | 0.99824780 |
-| A_latent_to_state_norm | 0.06298931 | 0.60481268 | 0.60834795 |
-
-Checks:
-
-```text
-NaN/Inf: none
-loss decreased: yes
-encoder collapse: no, latent_std_mean rose from near 0 to about 0.83
-latent participates in physical-state prediction: yes, A_latent_to_state_norm and gradient are nonzero
-spectral radius controlled: yes, final spectral_radius < 1.0
-overfitting: no severe split; val tracks train with a moderate gap
+checkpoint save/load
+real MAT loader check when the dataset is present
 ```
