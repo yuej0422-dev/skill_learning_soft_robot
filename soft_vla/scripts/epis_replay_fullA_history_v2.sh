@@ -24,7 +24,8 @@ export LD_LIBRARY_PATH="/home/cao/miniconda3/envs/soft_vla_cuda/lib:${LD_LIBRARY
 cd "$ROOT"
 
 PRESSURE_CHECKPOINT=${PRESSURE_CHECKPOINT:-"$ROOT/motion_control_training/feedforward_pressure/runs/tcp6_target_raw_pressure/best.pt"}
-KOOPMAN_CHECKPOINT=${KOOPMAN_CHECKPOINT:-"$ROOT/motion_control_training/koopman/experiments/fullA_history_v2/runs/robot_records_7_03_1_delta_tcp_fullA_history_v2_50hz_k50_hist10_epoch3000_wandb_online_20260712_2320/best.pt"}
+# 新采集的标准50Hz MAT数据模型：source/target=50Hz、history=30、ksteps=50。
+KOOPMAN_CHECKPOINT=${KOOPMAN_CHECKPOINT:-"$ROOT/motion_control_training/koopman/experiments/fullA_history_v2/runs/koopman_pressure16_fullA_history_v2_smoke_model_hparams_fullwindows_epoch1000_wandb_online_20260716/best.pt"}
 
 DATASET_ROOT=${DATASET_ROOT:-"$ROOT/lerobot_conversion/outputs/robot_records_7_03_1_delta_tcp"}
 FEEDBACK=${FEEDBACK:-integral_lqr}  # integral_lqr / fixed_k_integral
