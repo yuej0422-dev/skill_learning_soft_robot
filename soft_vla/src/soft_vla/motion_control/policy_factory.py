@@ -22,12 +22,17 @@ from soft_vla.motion_control.feedback_controllers import (
     make_integral_lqr_q_weights,
     solve_integral_lqr,
 )
+from soft_vla.motion_control.fulla_history_adapters import (
+    FullAHistoryKoopmanAdapter,
+    FullAHistoryKoopmanConfig,
+)
 from soft_vla.motion_control.koopman_adapter import KoopmanAdapter, KoopmanAdapterConfig
 from soft_vla.real_robot.safety_manager import SafetyLimits, SafetyManager
 
 
 FeedforwardBuilder = Callable[["MotionPolicyConfig"], FeedforwardPolicy]
-FeedbackBuilder = Callable[["MotionPolicyConfig", KoopmanAdapter], IntegralFeedbackController | None]
+KoopmanPolicy = KoopmanAdapter | FullAHistoryKoopmanAdapter
+FeedbackBuilder = Callable[["MotionPolicyConfig", KoopmanPolicy], IntegralFeedbackController | None]
 
 
 @dataclass(frozen=True)
@@ -44,8 +49,10 @@ class MotionPolicyConfig:
         "motion_control_training/koopman/runs/"
         "robot_records_7_03_1_delta_tcp_10hz_to_50hz_k50_epoch1500_wandb_online_20260706_2159/best.pt"
     )
+    koopman_architecture: str = "legacy"
     fixed_k_path: str | Path | None = None
     device: str = "cpu"
+    controller_dt: float = 0.02
     feedback_gain_scale: float = 0.1
     max_integral_error: float = 0.5
     q_tcp6_weight: float = 1.0
@@ -59,7 +66,7 @@ class MotionPolicyConfig:
 @dataclass(frozen=True)
 class BuiltMotionPolicy:
     runtime: MotionControlRuntime
-    koopman: KoopmanAdapter
+    koopman: KoopmanPolicy
     metadata: dict
 
 
@@ -77,7 +84,7 @@ def register_feedback(name: str, builder: FeedbackBuilder) -> None:
 
 def build_motion_policy(config: MotionPolicyConfig) -> BuiltMotionPolicy:
     feedforward = _build_feedforward(config)
-    koopman = KoopmanAdapter(KoopmanAdapterConfig(checkpoint=config.koopman_checkpoint, device=config.device))
+    koopman = _build_koopman(config)
     feedback = _build_feedback(config, koopman)
     runtime = MotionControlRuntime(
         feedforward=feedforward,
@@ -94,6 +101,10 @@ def build_motion_policy(config: MotionPolicyConfig) -> BuiltMotionPolicy:
             "pressure_checkpoint": str(config.pressure_checkpoint),
             "awac_checkpoint": str(config.awac_checkpoint),
             "koopman_checkpoint": str(config.koopman_checkpoint),
+            "koopman_architecture": config.koopman_architecture,
+            "koopman_history_steps": getattr(koopman, "history_steps", None),
+            "koopman_target_hz": getattr(koopman, "target_hz", None),
+            "controller_dt": config.controller_dt,
             "feedback_gain_scale": config.feedback_gain_scale,
             "max_integral_error": config.max_integral_error,
             "q_tcp6_weight": config.q_tcp6_weight,
@@ -105,6 +116,16 @@ def build_motion_policy(config: MotionPolicyConfig) -> BuiltMotionPolicy:
             "fixed_k_path": None if config.fixed_k_path is None else str(config.fixed_k_path),
         },
     )
+
+
+def _build_koopman(config: MotionPolicyConfig) -> KoopmanPolicy:
+    if config.koopman_architecture == "legacy":
+        return KoopmanAdapter(KoopmanAdapterConfig(checkpoint=config.koopman_checkpoint, device=config.device))
+    if config.koopman_architecture == "fullA_history_v2":
+        return FullAHistoryKoopmanAdapter(
+            FullAHistoryKoopmanConfig(checkpoint=config.koopman_checkpoint, device=config.device)
+        )
+    raise ValueError(f"unsupported Koopman architecture: {config.koopman_architecture}")
 
 
 def _build_feedforward(config: MotionPolicyConfig) -> FeedforwardPolicy:
@@ -126,7 +147,7 @@ def _build_feedforward(config: MotionPolicyConfig) -> FeedforwardPolicy:
     raise ValueError(f"unsupported feedforward policy: {config.feedforward}")
 
 
-def _build_feedback(config: MotionPolicyConfig, koopman: KoopmanAdapter) -> IntegralFeedbackController | None:
+def _build_feedback(config: MotionPolicyConfig, koopman: KoopmanPolicy) -> IntegralFeedbackController | None:
     if config.feedback in _FEEDBACK_BUILDERS:
         return _FEEDBACK_BUILDERS[config.feedback](config, koopman)
     if config.feedback == "none":
@@ -147,6 +168,7 @@ def _build_feedback(config: MotionPolicyConfig, koopman: KoopmanAdapter) -> Inte
             koopman.A_lift,
             koopman.B,
             C,
+            dt=config.controller_dt,
             q_weights=q_weights,
             r_weight=config.r_weight,
         )
@@ -156,6 +178,7 @@ def _build_feedback(config: MotionPolicyConfig, koopman: KoopmanAdapter) -> Inte
         K=np.asarray(K, dtype=np.float64),
         C=C,
         config=IntegralFeedbackConfig(
+            dt=config.controller_dt,
             ny=6,
             max_integral_error=config.max_integral_error,
             feedback_gain_scale=config.feedback_gain_scale,

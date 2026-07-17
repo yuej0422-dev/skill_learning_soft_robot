@@ -12,6 +12,8 @@ export LD_LIBRARY_PATH="/home/cao/miniconda3/envs/soft_vla_cuda/lib:${LD_LIBRARY
 #   HARDWARE_ENABLED=0 MAX_FRAMES=2 bash soft_vla/scripts/epis_replay_fullA_history_v2.sh
 # 上层每1秒发送一个target、总共发送3次：
 #   TARGET_FREQUENCY=1 MAX_FRAMES=3 bash soft_vla/scripts/epis_replay_fullA_history_v2.sh
+# 每次切换target前清空积分误差q（默认0，保持积分连续）：
+#   RESET_INTEGRAL_ON_TARGET=1 TARGET_FREQUENCY=10 MAX_FRAMES=3 bash soft_vla/scripts/epis_replay_fullA_history_v2.sh
 # 上层每10秒发送一个target、总共发送2次：
 #   TARGET_FREQUENCY=0.1 MAX_FRAMES=2 bash soft_vla/scripts/epis_replay_fullA_history_v2.sh
 # 使用10Hz Full-A Koopman时，需同时覆盖checkpoint与底层频率：
@@ -19,7 +21,10 @@ export LD_LIBRARY_PATH="/home/cao/miniconda3/envs/soft_vla_cuda/lib:${LD_LIBRARY
 # 实物小段验证：
 #   MAX_FRAMES=2 PRESSURE_SCALE=0.2 bash soft_vla/scripts/epis_replay_fullA_history_v2.sh
 # 离线生成临时固定 K 后回放：
-#   FEEDBACK=fixed_k_integral bash soft_vla/scripts/epis_replay_fullA_history_v2.sh
+#   TARGET_FREQUENCY=10 MAX_FRAMES=0 KOOPMAN_CHECKPOINT=/home/cao/skill_learning_soft_robot/motion_control_training/koopman/experiments/fullA_history_v2/runs/robot_records_7_03_1_delta_tcp_fullA_history_v2_10hz_k50_hist10_epoch3000_wandb_online_20260712_2313/best.pt FREQUENCY=10 FEEDBACK=fixed_k_integral bash soft_vla/scripts/epis_replay_fullA_history_v2.sh
+#   TARGET_FREQUENCY=10 MAX_FRAMES=0 FREQUENCY=50 FEEDBACK=fixed_k_integral bash soft_vla/scripts/epis_replay_fullA_history_v2.sh
+
+
 
 cd "$ROOT"
 
@@ -46,16 +51,22 @@ RIGID_BODY_ID=${RIGID_BODY_ID:-1}
 # FREQUENCY必须与Full-A Koopman checkpoint的target_hz一致。
 FREQUENCY=${FREQUENCY:-50}
 TARGET_FREQUENCY=${TARGET_FREQUENCY:-10}  # 上层target-state频率：10 / 1 / 0.1 Hz
+RESET_INTEGRAL_ON_TARGET=${RESET_INTEGRAL_ON_TARGET:-0}  # 1: 每个新target前q清零；0: 跨target保留q
 DELTA_TCP_SCALE=${DELTA_TCP_SCALE:-1}
 PRESSURE_SCALE=${PRESSURE_SCALE:-1}
-FEEDBACK_GAIN_SCALE=${FEEDBACK_GAIN_SCALE:-0.1}
-MAX_INTEGRAL_ERROR=${MAX_INTEGRAL_ERROR:-0.5}
+FEEDBACK_GAIN_SCALE=${FEEDBACK_GAIN_SCALE:-1}
+MAX_INTEGRAL_ERROR=${MAX_INTEGRAL_ERROR:-5}
 Q_TCP6_WEIGHT=${Q_TCP6_WEIGHT:-1.0}
 Q_STATE_TAIL_WEIGHT=${Q_STATE_TAIL_WEIGHT:-0.1}
 Q_LATENT_WEIGHT=${Q_LATENT_WEIGHT:-0.1}
 Q_INTEGRAL_WEIGHT=${Q_INTEGRAL_WEIGHT:-0.5}
-R_WEIGHT=${R_WEIGHT:-50.0}
+R_WEIGHT=${R_WEIGHT:-50}
 FIXED_K_PATH=${FIXED_K_PATH:-}
+
+if [[ "$RESET_INTEGRAL_ON_TARGET" != "0" && "$RESET_INTEGRAL_ON_TARGET" != "1" ]]; then
+  echo "RESET_INTEGRAL_ON_TARGET must be 0 or 1, got $RESET_INTEGRAL_ON_TARGET" >&2
+  exit 2
+fi
 
 for required in "$PY" "$PRESSURE_CHECKPOINT" "$KOOPMAN_CHECKPOINT"; do
   if [[ ! -e "$required" ]]; then
@@ -125,6 +136,10 @@ args=(
 
 if [[ "$FEEDBACK" == "fixed_k_integral" ]]; then
   args+=(--fixed-k-path "$FIXED_K_PATH")
+fi
+
+if [[ "$RESET_INTEGRAL_ON_TARGET" == "1" ]]; then
+  args+=(--reset-integral-on-target)
 fi
 
 if [[ "$HARDWARE_ENABLED" == "1" ]]; then

@@ -167,6 +167,11 @@ def main() -> None:
         default=10.0,
         help="Upper target-state update frequency in Hz, e.g. 10, 1, or 0.1.",
     )
+    parser.add_argument(
+        "--reset-integral-on-target",
+        action="store_true",
+        help="Reset the integral-feedback error q before tracking each new target state.",
+    )
     parser.add_argument("--log-jsonl", type=Path, default=None)
     parser.add_argument("--plot-path", type=Path, default=None)
     parser.add_argument("--output-summary", type=Path, default=None)
@@ -260,6 +265,7 @@ def main() -> None:
     tracking_error_samples = 0
     writes = 0
     control_steps = 0
+    integral_reset_count = 0
 
     state_source.open()
     driver.open()
@@ -268,6 +274,9 @@ def main() -> None:
     try:
         timer = PeriodicTimer(args.frequency)
         for upper_step, row in enumerate(rows):
+            if args.reset_integral_on_target:
+                feedback.reset()
+                integral_reset_count += 1
             dataset_base_state12 = row["state"][:12].astype(np.float32)
             action = UpperAction(
                 delta_tcp6=row["action"][:6],
@@ -317,6 +326,7 @@ def main() -> None:
                             "upper_step": upper_step,
                             "substep": substep,
                             "target_frequency_hz": args.target_frequency,
+                            "integral_reset_on_target": args.reset_integral_on_target,
                             "frame_index": row["frame_index"],
                             "dataset_timestamp": row["timestamp"],
                             "dataset_base_state": dataset_base_state12.tolist(),
@@ -367,6 +377,8 @@ def main() -> None:
         "control_frequency_hz": args.frequency,
         "feedback_dt_s": 1.0 / args.frequency,
         "control_steps_per_target": ref_gen.substeps,
+        "integral_reset_on_target": args.reset_integral_on_target,
+        "integral_reset_count": integral_reset_count,
         "planned_duration_s": len(rows) / args.target_frequency,
         "control_steps": control_steps,
         "target_source": "lerobot_observation_state_plus_lerobot_action_delta",

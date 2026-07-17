@@ -13,7 +13,7 @@ from typing import Any
 import numpy as np
 
 from soft_vla.human_intervention.action_mapper import HumanActionMapper, HumanActionMapperConfig
-from soft_vla.human_intervention.episode_saver import HumanEpisodeSaver
+from soft_vla.human_intervention.episode_saver import HumanEpisodeSaver, PressureStateHumanEpisodeSaver
 from soft_vla.human_intervention.intervention_manager import InterventionManager, InterventionManagerConfig
 from soft_vla.human_intervention.target_integrator import HumanTargetIntegrator, HumanTargetIntegratorConfig
 from soft_vla.human_intervention.xbox_controller import EvdevXboxStateDecoder, XboxControllerConfig, XboxControllerReader, empty_gamepad_snapshot
@@ -28,6 +28,7 @@ from soft_vla.runtime.smolvla_async_runtime import (
     logger_process,
     smolvla_inference_process,
     _best_effort_put,
+    _decode_vla_action,
     _drain_put,
     _install_stop_signal_handlers,
     _restore_signal_handlers,
@@ -66,6 +67,7 @@ class HumanInterventionRuntimeConfig(SmolVLAAsyncRuntimeConfig):
     remote_control_debug: bool = False
     save_human_episodes: bool = True
     episode_save_root: str = "/tmp/soft_vla_human_episodes"
+    save_pressure_state_training_data: bool = False
 
 
 def run_smolvla_human_intervention_runtime(config: HumanInterventionRuntimeConfig) -> dict[str, Any]:
@@ -233,6 +235,7 @@ def human_upper_dispatch_process_10hz(
         "upper_frequency_hz": config.upper_frequency_hz,
         "control_frequency_hz": config.control_frequency_hz,
         "delta_tcp_scale": config.delta_tcp_scale,
+        "interpolation": config.reference_interpolation,
     }
     if config.human_target_integration:
         ref_gen_kwargs["max_delta_tcp"] = (
@@ -244,7 +247,17 @@ def human_upper_dispatch_process_10hz(
             config.human_target_max_rot_offset,
         )
     ref_gen = ReferenceGenerator(ReferenceGeneratorConfig(**ref_gen_kwargs))
-    executor = make_chunk_executor({"mode": config.mode, "chunk_size": config.chunk_size, "execution_horizon": config.execution_horizon, "replan_interval": config.replan_interval, "chunk_trigger_margin": config.chunk_trigger_margin, "chunk_expected_stale_steps": config.chunk_expected_stale_steps})
+    executor = make_chunk_executor(
+        {
+            "mode": config.mode,
+            "chunk_size": config.chunk_size,
+            "execution_horizon": config.execution_horizon,
+            "replan_interval": config.replan_interval,
+            "chunk_trigger_margin": config.chunk_trigger_margin,
+            "chunk_expected_stale_steps": config.chunk_expected_stale_steps,
+            "action_dim": 19 if config.vla_action_mode == "pressure_delta19" else 7,
+        }
+    )
     mapper = HumanActionMapper(_mapper_config(config))
     manager = InterventionManager(_manager_config(config))
     target_integrator = HumanTargetIntegrator(_target_integrator_config(config))
@@ -277,24 +290,29 @@ def human_upper_dispatch_process_10hz(
 
         vla_record_source = "exception_fallback"
         vla_fallback = False
+        raw_vla_action = np.zeros(19 if config.vla_action_mode == "pressure_delta19" else 7, dtype=np.float32)
         try:
             record = executor.get_action(steps, time.monotonic())
-            vla_action7 = record.action.copy()
+            raw_vla_action = record.action.copy()
             vla_record_source = record.source
             vla_fallback = "fallback" in record.source
             if vla_fallback:
                 fallbacks += 1
-                vla_action7[6] = float(latest_state.get("gripper_open", 1.0))
+                raw_vla_action[6] = float(latest_state.get("gripper_open", 1.0))
         except Exception:
             fallbacks += 1
             vla_fallback = True
-            vla_action7 = np.zeros(7, dtype=np.float32)
-            vla_action7[6] = float(latest_state.get("gripper_open", 1.0))
+            raw_vla_action[6] = float(latest_state.get("gripper_open", 1.0))
         if config.remote_control_debug:
-            vla_action7 = np.zeros(7, dtype=np.float32)
-            vla_action7[6] = 0.5
+            raw_vla_action.fill(0.0)
+            raw_vla_action[6] = 0.5
             vla_record_source = "remote_control_debug_zero_vla"
             vla_fallback = False
+        vla_action7, feedforward_pressure12, pressure_delta12 = _decode_human_runtime_vla_action(
+            config,
+            raw_vla_action,
+            latest_state,
+        )
 
         human_cmd = mapper.map_input(latest_human_snapshot, current_state12=np.asarray(latest_state["state12"], dtype=np.float32))
         result = manager.step(vla_action7=vla_action7, human_command=human_cmd, vla_fallback=vla_fallback)
@@ -315,7 +333,22 @@ def human_upper_dispatch_process_10hz(
 
         action = UpperAction(delta_tcp6=executed_action7[:6], gripper_open=float(executed_action7[6]), upper_step=steps, source=f"human_intervention_{result.action_source}")
         segment = ref_gen.build(current_state12=np.asarray(latest_state["state12"], dtype=np.float32), action=action)
-        _drain_put(reference_queue, {"upper_step": steps, "control_start_step": segment.control_start_step, "reference_states12": segment.reference_states12.tolist(), "gripper_open": segment.gripper_open, "delta_tcp6": action.delta_tcp6.tolist(), "action_source": result.action_source})
+        _drain_put(
+            reference_queue,
+            {
+                "upper_step": steps,
+                "control_start_step": segment.control_start_step,
+                "reference_states12": segment.reference_states12.tolist(),
+                "gripper_open": segment.gripper_open,
+                "delta_tcp6": action.delta_tcp6.tolist(),
+                # During intervention only delta TCP/gripper arbitration changes.
+                # The pressure-state VLA feedforward remains active as requested.
+                "feedforward_pressure12": (
+                    None if feedforward_pressure12 is None else feedforward_pressure12.tolist()
+                ),
+                "action_source": result.action_source,
+            },
+        )
 
         replan_triggered = False
         if executor.needs_replan(steps, time.monotonic()) and not inference_running:
@@ -333,10 +366,18 @@ def human_upper_dispatch_process_10hz(
             "timestamp": t0 / 1_000_000_000.0,
             "period_ms": period_ms,
             "vla_action": result.vla_action7.astype(float).tolist(),
+            "vla_action19": raw_vla_action.astype(float).tolist(),
+            "vla_pressure_delta12": (
+                None if pressure_delta12 is None else pressure_delta12.astype(float).tolist()
+            ),
+            "vla_feedforward_pressure12": (
+                None if feedforward_pressure12 is None else feedforward_pressure12.astype(float).tolist()
+            ),
             "human_action": result.human_action7.astype(float).tolist(),
             "executed_action": executed_action7.astype(float).tolist(),
             "executed_action_delta_tcp": executed_action7[:6].astype(float).tolist(),
             "executed_action_gripper": float(executed_action7[6]),
+            "gripper_open": float(latest_state.get("gripper_open", executed_action7[6])),
             "action_source": result.action_source,
             "previous_action_source": result.previous_action_source,
             "intervention_active": result.intervention_active,
@@ -369,6 +410,22 @@ def human_upper_dispatch_process_10hz(
             "executed_action": executed_action7.astype(float).tolist(),
             "executed_action_delta_tcp": executed_action7[:6].astype(float).tolist(),
             "executed_action_gripper": float(executed_action7[6]),
+            "gripper_open": float(latest_state.get("gripper_open", executed_action7[6])),
+            "action_source": result.action_source,
+            "previous_action_source": result.previous_action_source,
+            "intervention_active": result.intervention_active,
+            "handover_event": result.handover_event,
+            "handover_blend_active": result.handover_blend_active,
+            "fallback_used": result.fallback_used,
+            "vla_action19": raw_vla_action.astype(float).tolist(),
+            "vla_pressure_delta12": (
+                None if pressure_delta12 is None else pressure_delta12.astype(float).tolist()
+            ),
+            "vla_feedforward_pressure12": (
+                None if feedforward_pressure12 is None else feedforward_pressure12.astype(float).tolist()
+            ),
+            "closed_loop_delta_action12": latest_state.get("closed_loop_delta_action12"),
+            "pre_safety_action12": latest_state.get("pre_safety_action12"),
             "state12": latest_state["state12"],
             "u_p12": latest_state.get("u_p12"),
             "u_paw4": latest_state.get("u_paw4"),
@@ -474,7 +531,7 @@ def xbox_listener_process(config: HumanInterventionRuntimeConfig, stop_event, hu
 
 
 def episode_saver_process(config: HumanInterventionRuntimeConfig, stop_event, episode_queue, summary_queue) -> None:
-    saver = HumanEpisodeSaver(config.episode_save_root, enabled=config.save_human_episodes, zed_eye=config.zed_eye)
+    saver = _build_episode_saver(config)
     frames = 0
     closed = 0
     while True:
@@ -492,10 +549,33 @@ def episode_saver_process(config: HumanInterventionRuntimeConfig, stop_event, ep
         elif item.get("event") == "close_episode":
             saver.close_episode(success=bool(item.get("success", False)), failure=bool(item.get("failure", False)), termination_reason=str(item.get("termination_reason", "interrupted")))
             closed += 1
-            saver = HumanEpisodeSaver(config.episode_save_root, enabled=config.save_human_episodes, zed_eye=config.zed_eye)
+            saver = _build_episode_saver(config)
     if frames and closed == 0:
         saver.close_episode(success=False, failure=False, termination_reason="interrupted")
     summary_queue.put({"name": "human_episode_saver", "summary": {"frames": frames, "closed_episodes": closed, "root": config.episode_save_root}})
+
+
+def _build_episode_saver(config: HumanInterventionRuntimeConfig) -> HumanEpisodeSaver:
+    if config.save_pressure_state_training_data:
+        return PressureStateHumanEpisodeSaver(
+            config.episode_save_root,
+            enabled=config.save_human_episodes,
+            zed_eye=config.zed_eye,
+            pressure_delta_scale=config.pressure_delta_scale,
+        )
+    return HumanEpisodeSaver(
+        config.episode_save_root,
+        enabled=config.save_human_episodes,
+        zed_eye=config.zed_eye,
+    )
+
+
+def _decode_human_runtime_vla_action(
+    config: HumanInterventionRuntimeConfig,
+    raw_vla_action: np.ndarray,
+    latest_state: dict[str, Any],
+) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None]:
+    return _decode_vla_action(config, raw_vla_action, latest_state)
 
 
 def _mapper_config(config: HumanInterventionRuntimeConfig) -> HumanActionMapperConfig:

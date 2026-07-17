@@ -14,7 +14,7 @@ export LD_LIBRARY_PATH="/home/cao/miniconda3/envs/soft_vla_cuda/lib:${LD_LIBRARY
 #   4) 调 Q/R 后生成固定 K：Q_TCP6_WEIGHT=2 R_WEIGHT=50 FEEDBACK=fixed_k_integral bash soft_vla/scripts/epis_replay.sh
 #   5) 改输出目录名：RUN_LABEL=Qlearning FEEDFORWARD=awac bash soft_vla/scripts/epis_replay.sh
 #   6) 上层1Hz、发送3次target：TARGET_FREQUENCY=1 MAX_FRAMES=3 bash soft_vla/scripts/epis_replay.sh
-#   7) 上层0.1Hz、发送2次target：TARGET_FREQUENCY=0.1 MAX_FRAMES=2 bash soft_vla/scripts/epis_replay.sh
+#   7) 上层0.1Hz、发送2次target：TARGET_FREQUENCY=0.1 MAX_FRAMES=20 FEEDBACK=fixed_k_integral bash soft_vla/scripts/epis_replay.sh
 # 输出图与 Full-A 入口一致：第三个子图为闭环控制律的12路 delta action。
 
 cd "$ROOT"
@@ -45,7 +45,7 @@ TARGET_FREQUENCY=${TARGET_FREQUENCY:-10}    # 上层target-state频率：10 / 1 
 # ===== 策略输出与压力缩放 =====
 DELTA_TCP_SCALE=${DELTA_TCP_SCALE:-1}       # target delta TCP 缩放
 PRESSURE_SCALE=${PRESSURE_SCALE:-1}         # 最终压力缩放，1 表示完整 0-3 bar 范围
-FEEDBACK_GAIN_SCALE=${FEEDBACK_GAIN_SCALE:-0.1}
+FEEDBACK_GAIN_SCALE=${FEEDBACK_GAIN_SCALE:-0.2}
 MAX_INTEGRAL_ERROR=${MAX_INTEGRAL_ERROR:-0.5}
 
 # ===== fixed_k_integral 离线 K 参数 =====
@@ -65,7 +65,6 @@ if [[ "$FEEDBACK" == "fixed_k_integral" ]]; then
   "$PY" soft_vla/scripts/build_fixed_k_integral.py \
     --output "$FIXED_K_PATH" \
     --device "$DEVICE" \
-    --frequency "$FREQUENCY" \
     --q-tcp6-weight "$Q_TCP6_WEIGHT" \
     --q-state-tail-weight "$Q_STATE_TAIL_WEIGHT" \
     --q-latent-weight "$Q_LATENT_WEIGHT" \

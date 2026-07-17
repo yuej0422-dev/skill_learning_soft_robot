@@ -84,7 +84,9 @@ class SmolVLAAsyncRuntimeConfig:
     pressure_checkpoint: str | None = None
     awac_checkpoint: str | None = None
     koopman_checkpoint: str | None = None
+    koopman_architecture: str = "legacy"
     fixed_k_path: str | None = None
+    reset_integral_on_target: bool = False
     feedback_gain_scale: float = 0.1
     max_integral_error: float = 0.5
     q_tcp6_weight: float = 1.0
@@ -277,8 +279,10 @@ def control_process_50hz(
             pressure_checkpoint=config.pressure_checkpoint or MotionPolicyConfig.pressure_checkpoint,
             awac_checkpoint=config.awac_checkpoint or MotionPolicyConfig.awac_checkpoint,
             koopman_checkpoint=config.koopman_checkpoint or MotionPolicyConfig.koopman_checkpoint,
+            koopman_architecture=config.koopman_architecture,
             fixed_k_path=config.fixed_k_path,
             device=config.device,
+            controller_dt=1.0 / float(config.control_frequency_hz),
             feedback_gain_scale=config.feedback_gain_scale,
             max_integral_error=config.max_integral_error,
             q_tcp6_weight=config.q_tcp6_weight,
@@ -334,6 +338,7 @@ def control_process_50hz(
     episode_end_reset_packets = 0
     episode_end_reset_errors: list[str] = []
     episode_end_reset_requested = False
+    integral_reset_count = 0
     try:
         _wait_for_run_start(stop_event, run_start)
         if stop_event.is_set():
@@ -380,6 +385,22 @@ def control_process_50hz(
                     reset_request = reference_msg
                 else:
                     latest_reference = reference_msg
+                    if config.reset_integral_on_target and motion_policy.runtime.feedback is not None:
+                        motion_policy.runtime.feedback.reset()
+                        integral_reset_count += 1
+                        _best_effort_put(
+                            log_queue,
+                            {
+                                "process": "control_50hz",
+                                "event": "integral_reset_on_target",
+                                "integral_reset_count": integral_reset_count,
+                                "upper_step": (
+                                    reference_msg.get("upper_step")
+                                    if isinstance(reference_msg, dict)
+                                    else None
+                                ),
+                            },
+                        )
             if reset_request is not None:
                 episode_end_reset_requested = True
                 hold_s = max(0.0, float(reset_request.get("hold_s", config.episode_end_reset_sleep_s)))
@@ -454,6 +475,11 @@ def control_process_50hz(
                         else np.asarray(latest_reference["feedforward_pressure12"], dtype=np.float32)
                     ),
                 )
+                record_control = getattr(motion_policy.koopman, "record_control", None)
+                if record_control is not None:
+                    # Full-A history checkpoints were trained with the applied
+                    # normalized 12D pressure in their 30-step context.
+                    record_control(command.motion_norm12)
                 ref_step = {"upper_step": latest_reference["upper_step"], "substep": int(substep)}
                 reference_state = reference
                 tcp_error = measured.state12[:6] - reference[:6]
@@ -471,6 +497,15 @@ def control_process_50hz(
             state_msg["pressure16"] = command.final_physical.tolist()
             state_msg["u_p12"] = command.motion_norm12.tolist()
             state_msg["u_paw4"] = command.final_physical[12:16].tolist()
+            state_msg["feedforward_action12"] = command.debug.get(
+                "feedforward_action12", np.zeros(12, dtype=np.float32)
+            ).tolist()
+            state_msg["closed_loop_delta_action12"] = command.debug.get(
+                "closed_loop_delta_action12", np.zeros(12, dtype=np.float32)
+            ).tolist()
+            state_msg["pre_safety_action12"] = command.debug.get(
+                "pre_safety_action12", np.zeros(12, dtype=np.float32)
+            ).tolist()
             _best_effort_put(upper_state_queue, state_msg)
             _best_effort_put(inference_state_queue, state_msg)
             _best_effort_put(
@@ -544,6 +579,8 @@ def control_process_50hz(
                 "episode_end_reset_requested": episode_end_reset_requested,
                 "episode_end_reset_packets": episode_end_reset_packets,
                 "episode_end_reset_errors": episode_end_reset_errors,
+                "integral_reset_on_target": config.reset_integral_on_target,
+                "integral_reset_count": integral_reset_count,
                 "motion_policy": motion_policy.metadata,
                 "timing": timing.summary(),
             },
@@ -1626,5 +1663,9 @@ def _format_motion_policy_metadata(metadata: dict[str, Any]) -> str:
         "pressure_checkpoint",
         "awac_checkpoint",
         "koopman_checkpoint",
+        "koopman_architecture",
+        "koopman_history_steps",
+        "koopman_target_hz",
+        "controller_dt",
     ]
     return ", ".join(f"{key}={metadata.get(key)}" for key in keys if key in metadata)

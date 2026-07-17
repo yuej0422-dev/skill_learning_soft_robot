@@ -117,7 +117,13 @@ def main() -> None:
     parser.add_argument("--pressure-checkpoint", type=Path, default=DEFAULT_PRESSURE_CHECKPOINT)
     parser.add_argument("--awac-checkpoint", type=Path, default=DEFAULT_AWAC_CHECKPOINT)
     parser.add_argument("--koopman-checkpoint", type=Path, default=DEFAULT_KOOPMAN_CHECKPOINT)
+    parser.add_argument(
+        "--koopman-architecture",
+        choices=["legacy", "fullA_history_v2"],
+        default="legacy",
+    )
     parser.add_argument("--fixed-k-path", type=Path, default=None)
+    parser.add_argument("--reset-integral-on-target", action="store_true")
     parser.add_argument("--feedback-gain-scale", type=float, default=0.1)
     parser.add_argument("--max-integral-error", type=float, default=0.5)
     parser.add_argument("--q-tcp6-weight", type=float, default=1.0)
@@ -229,7 +235,9 @@ def main() -> None:
                 pressure_checkpoint=str(pressure_checkpoint),
                 awac_checkpoint=str(awac_checkpoint),
                 koopman_checkpoint=str(koopman_checkpoint),
+                koopman_architecture=args.koopman_architecture,
                 fixed_k_path=None if fixed_k_path is None else str(fixed_k_path),
+                reset_integral_on_target=args.reset_integral_on_target,
                 feedback_gain_scale=args.feedback_gain_scale,
                 max_integral_error=args.max_integral_error,
                 q_tcp6_weight=args.q_tcp6_weight,
