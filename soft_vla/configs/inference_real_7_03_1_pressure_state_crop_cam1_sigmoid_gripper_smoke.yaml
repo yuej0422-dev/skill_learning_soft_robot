@@ -1,0 +1,24 @@
+dataset:
+  config: configs/dataset.real_records_7_03_1_delta_tcp_pressure_state.yaml
+  root: /home/yuej/skill_learning_soft_robot/lerobot_conversion/outputs/robot_records_7_03_1_delta_tcp_pressure_state
+  episode_index: 0
+  video_backend: pyav
+
+policy:
+  policy_type: smolvla
+  checkpoint: outputs/smolvla_real_7_03_1_pressure_state_crop_cam1_sigmoid_gripper_smoke/checkpoints/last/pretrained_model
+  device: cuda
+
+image_transforms:
+  crop_right_fraction:
+    observation.images.cam_1: 0.2
+
+gripper_action_head:
+  sigmoid_bounded: true
+
+inference:
+  dry_run: true
+  safety_filter: true
+  max_frames: 3
+  output_dir: outputs/offline_inference_real_7_03_1_pressure_state_crop_cam1_sigmoid_gripper_smoke
+  report_name: offline_inference_real_7_03_1_pressure_state_crop_cam1_sigmoid_gripper_smoke.md

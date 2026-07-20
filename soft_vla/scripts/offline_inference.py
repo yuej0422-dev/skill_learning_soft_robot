@@ -55,6 +55,12 @@ def dry_run_safety_filter(action: np.ndarray) -> np.ndarray:
     return arr.astype(np.float32)
 
 
+def apply_sigmoid_gripper_np(action: np.ndarray, *, gripper_index: int = 6) -> np.ndarray:
+    arr = validate_vector(action, "predicted action").copy()
+    arr[..., gripper_index] = 1.0 / (1.0 + np.exp(-arr[..., gripper_index]))
+    return arr.astype(np.float32)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
@@ -104,6 +110,7 @@ def main() -> int:
     )
     max_frames = cfg["inference"].get("max_frames")
     use_safety_filter = bool(cfg["inference"].get("safety_filter", True))
+    use_sigmoid_gripper_head = bool(cfg.get("gripper_action_head", {}).get("sigmoid_bounded", False))
     records = []
     latencies = []
     errors = []
@@ -147,12 +154,18 @@ def main() -> int:
         with torch.no_grad(), torch.amp.autocast("cuda", enabled=True):
             action_chunk = policy.predict_action_chunk(batch)
         raw_chunk = postprocessor.process_action(action_chunk).detach().cpu()
+        if use_sigmoid_gripper_head:
+            raw_chunk = torch.as_tensor(apply_sigmoid_gripper_np(raw_chunk.numpy()))
         t1.record()
         torch.cuda.synchronize()
         latency_ms = float(t0.elapsed_time(t1))
         pred = raw_chunk[0, 0].numpy().astype(np.float32)
-        if use_safety_filter:
+        if use_safety_filter and not use_sigmoid_gripper_head:
             pred = dry_run_safety_filter(pred)
+        elif use_safety_filter:
+            pred = validate_vector(pred, "predicted action").copy()
+            pred[:3] = np.clip(pred[:3], -0.02, 0.02)
+            pred[3:6] = np.clip(pred[3:6], -0.08, 0.08)
         if pred.shape != gt.shape:
             raise ValueError(f"predicted action shape {pred.shape} does not match ground-truth shape {gt.shape}")
         err = pred - gt
@@ -190,6 +203,10 @@ def main() -> int:
         "per_dimension_mae": np.mean(np.abs(err_arr), axis=0).tolist() if len(err_arr) else [],
         "gripper_prediction_values": sorted(set(float(r["pred_action"][6]) for r in records)) if records and len(records[0]["pred_action"]) > 6 else [],
         "safety_filter": use_safety_filter,
+        "gripper_action_head": {
+            "sigmoid_bounded": use_sigmoid_gripper_head,
+            "postprocess": "sigmoid(action[6])" if use_sigmoid_gripper_head else "none",
+        },
         "dry_run": True,
     }
     (out_dir / "records.json").write_text(json.dumps(records, indent=2), encoding="utf-8")

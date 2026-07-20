@@ -24,6 +24,7 @@ from soft_vla.training.gripper import (
     apply_identity_stats_for_indices,
     apply_hybrid_action_stats,
     build_transition_weights,
+    smolvla_sigmoid_gripper_loss,
     smolvla_weighted_action_loss,
 )
 
@@ -310,6 +311,8 @@ def main() -> int:
     use_weighted_loss = bool(loss_weight_cfg.get("enabled", False))
     tcp_loss_weight = float(loss_weight_cfg.get("tcp_weight", 1.0))
     gripper_loss_weight = float(loss_weight_cfg.get("gripper_weight", 1.0))
+    gripper_head_cfg = raw_cfg.get("gripper_action_head", {})
+    use_sigmoid_gripper_head = bool(gripper_head_cfg.get("sigmoid_bounded", False))
     sampled_indices: list[int] = []
     sampled_gripper: list[float] = []
     sampled_episodes: list[int] = []
@@ -326,7 +329,9 @@ def main() -> int:
         batch = preprocessor(raw_batch)
         t_forward = time.perf_counter()
         with torch.amp.autocast("cuda", enabled=bool(cfg.policy.use_amp)):
-            if use_weighted_loss:
+            if use_sigmoid_gripper_head:
+                loss, out_dict = smolvla_sigmoid_gripper_loss(policy, batch)
+            elif use_weighted_loss:
                 loss, out_dict = smolvla_weighted_action_loss(
                     policy,
                     batch,
@@ -393,6 +398,10 @@ def main() -> int:
             "checkpoint_dir": str(checkpoint_dir),
             "pretrained_model_dir": str(checkpoint_dir / "pretrained_model"),
             "peak_gpu_memory_gb": torch.cuda.max_memory_allocated() / 1024**3,
+            "gripper_action_head": {
+                "sigmoid_bounded": use_sigmoid_gripper_head,
+                "gripper_weight": 1.0,
+            },
             "weight_update": weight_report,
         }
     )

@@ -69,6 +69,13 @@ def apply_identity_stats_for_indices(stats: dict[str, Any], identity_indices: di
     return patched
 
 
+def apply_sigmoid_to_gripper_action(actions: torch.Tensor, *, gripper_index: int = GRIPPER_ACTION_INDEX) -> torch.Tensor:
+    """Treat the selected action dimension as a logit and bound it to 0..1."""
+    bounded = actions.clone()
+    bounded[..., gripper_index] = torch.sigmoid(bounded[..., gripper_index])
+    return bounded
+
+
 def extract_dataset_arrays(dataset) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     hf_dataset = getattr(dataset, "hf_dataset", None)
     if hf_dataset is not None:
@@ -208,6 +215,97 @@ def smolvla_weighted_action_loss(
         "weighted_gripper_loss": float((gripper_loss * float(gripper_weight)).detach().cpu()),
         "tcp_weight": float(tcp_weight),
         "gripper_weight": float(gripper_weight),
+    }
+
+
+def smolvla_sigmoid_gripper_loss(
+    policy,
+    batch: dict[str, torch.Tensor],
+    *,
+    gripper_index: int = GRIPPER_ACTION_INDEX,
+    noise=None,
+    time=None,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    """SmolVLA flow loss with only gripper final action passed through sigmoid.
+
+    The non-gripper dimensions keep the standard flow-matching MSE. For the
+    gripper dimension, reconstruct the final action prediction from the current
+    flow step, treat it as a logit, apply sigmoid, and compare directly against
+    the 0/1 target with weight 1 like every other action dimension.
+    """
+    import torch.nn.functional as F
+    from lerobot.policies.smolvla.modeling_smolvla import (
+        ACTION,
+        OBS_LANGUAGE_ATTENTION_MASK,
+        OBS_LANGUAGE_TOKENS,
+        OBS_STATE,
+        make_att_2d_masks,
+    )
+
+    if policy.config.adapt_to_pi_aloha:
+        batch[OBS_STATE] = policy._pi_aloha_decode_state(batch[OBS_STATE])
+        batch[ACTION] = policy._pi_aloha_encode_actions_inv(batch[ACTION])
+
+    images, img_masks = policy.prepare_images(batch)
+    state = policy.prepare_state(batch)
+    lang_tokens = batch[f"{OBS_LANGUAGE_TOKENS}"]
+    lang_masks = batch[f"{OBS_LANGUAGE_ATTENTION_MASK}"]
+    actions = policy.prepare_action(batch)
+
+    if noise is None:
+        noise = policy.model.sample_noise(actions.shape, actions.device)
+    if time is None:
+        time = policy.model.sample_time(actions.shape[0], actions.device)
+
+    time_expanded = time[:, None, None]
+    x_t = time_expanded * noise + (1 - time_expanded) * actions
+    u_t = noise - actions
+    prefix_embs, prefix_pad_masks, prefix_att_masks = policy.model.embed_prefix(
+        images, img_masks, lang_tokens, lang_masks, state=state
+    )
+    suffix_embs, suffix_pad_masks, suffix_att_masks = policy.model.embed_suffix(x_t, time)
+
+    pad_masks = torch.cat([prefix_pad_masks, suffix_pad_masks], dim=1)
+    att_masks = torch.cat([prefix_att_masks, suffix_att_masks], dim=1)
+    att_2d_masks = make_att_2d_masks(pad_masks, att_masks)
+    position_ids = torch.cumsum(pad_masks, dim=1) - 1
+    (_, suffix_out), _ = policy.model.vlm_with_expert.forward(
+        attention_mask=att_2d_masks,
+        position_ids=position_ids,
+        past_key_values=None,
+        inputs_embeds=[prefix_embs, suffix_embs],
+        use_cache=False,
+        fill_kv_cache=False,
+    )
+    suffix_out = suffix_out[:, -policy.model.config.chunk_size :]
+    suffix_out = suffix_out.to(dtype=torch.float32)
+    v_t = policy.model.action_out_proj(suffix_out)
+
+    losses = F.mse_loss(u_t, v_t, reduction="none")
+    losses = losses[:, :, : policy.config.max_action_dim]
+    final_action_logits = x_t - time_expanded * v_t
+    gripper_pred = torch.sigmoid(final_action_logits[:, :, gripper_index])
+    gripper_target = actions[:, :, gripper_index]
+    gripper_losses = F.mse_loss(gripper_pred, gripper_target, reduction="none")
+    losses[:, :, gripper_index] = gripper_losses
+
+    pad = batch.get("action_is_pad")
+    if pad is None:
+        pad = batch.get("actions_id_pad")
+    if pad is not None:
+        valid = (~pad).to(losses.device).bool()
+        losses = losses * valid.unsqueeze(-1)
+
+    loss = losses.mean()
+    return loss, {
+        "losses_after_forward": float(losses.detach().mean().cpu()),
+        "losses_after_sigmoid_gripper": float(loss.detach().cpu()),
+        "loss": float(loss.detach().cpu()),
+        "gripper_loss": float(gripper_losses.detach().mean().cpu()),
+        "gripper_pred_min": float(gripper_pred.detach().min().cpu()),
+        "gripper_pred_max": float(gripper_pred.detach().max().cpu()),
+        "gripper_index": int(gripper_index),
+        "gripper_weight": 1.0,
     }
 
 

@@ -1,0 +1,48 @@
+dataset:
+  config: configs/dataset.real_records_7_03_1_delta_tcp_pressure_state.yaml
+  root: /home/yuej/skill_learning_soft_robot/lerobot_conversion/outputs/robot_records_7_03_1_delta_tcp_pressure_state
+  episodes: [0, 1]
+  video_backend: pyav
+
+policy:
+  name: smolvla
+  pretrained_path: lerobot/smolvla_base
+  batch_size: 1
+  steps: 2
+  gradient_accumulation_steps: 1
+  num_workers: 0
+  device: cuda
+  use_amp: true
+  freeze_vision_encoder: false
+  train_expert_only: false
+  train_state_proj: true
+  use_peft: false
+  push_to_hub: false
+  checkpoint_dir: outputs/smolvla_real_7_03_1_pressure_state_crop_cam1_sigmoid_gripper_smoke
+  save_freq: 2
+  log_freq: 1
+  eval_freq: 0
+
+image_transforms:
+  crop_right_fraction:
+    observation.images.cam_1: 0.2
+
+normalization_overrides:
+  observation.state:
+    identity_indices: [12]
+  action:
+    identity_indices: [6]
+
+gripper_action_head:
+  sigmoid_bounded: true
+
+gripper_training:
+  transition_oversampling:
+    enabled: false
+  loss_weight:
+    enabled: false
+    tcp_weight: 1.0
+    gripper_weight: 1.0
+
+reports:
+  update_shared: false
