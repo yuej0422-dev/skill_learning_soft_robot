@@ -7,13 +7,12 @@ set -Eeuo pipefail
 #   始终使用 --resume：首次运行正常创建，中断后再次执行会自动续采。
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../../.." && pwd)"
 
 PYTHON_BIN="${PYTHON_BIN:-/home/cao/miniconda3/envs/soft_vla_cuda/bin/python}"
 PORT="${PORT:-/dev/ttyUSB0}"
 LUMO_IP="${LUMO_IP:-192.168.140.1}"
 RIGID_BODY_ID="${RIGID_BODY_ID:-1}"
-OUTPUT_DIR="${OUTPUT_DIR:-${REPO_ROOT}/Collected_Data/koopman_pressure16}"
+OUTPUT_DIR="${OUTPUT_DIR:-${SCRIPT_DIR}/Collected_Data/koopman_pressure16}"
 TERMS="${TERMS:-0:8}"
 AMPLITUDE_INDICES="${AMPLITUDE_INDICES:-0:20}"
 REPEATS="${REPEATS:-3}"

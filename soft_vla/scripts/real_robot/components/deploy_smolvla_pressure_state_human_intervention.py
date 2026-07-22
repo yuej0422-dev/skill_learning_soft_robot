@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 
 from bootstrap import add_src_to_path
@@ -13,12 +14,12 @@ from soft_vla.runtime.smolvla_human_intervention_runtime import (  # noqa: E402
     HumanInterventionRuntimeConfig,
     run_smolvla_human_intervention_runtime,
 )
+from soft_vla.runtime.smolvla_async_runtime import _resolve_sigmoid_bounded_gripper  # noqa: E402
 
 
 DEFAULT_CHECKPOINT = REPO_ROOT / (
     "soft_vla/outputs/full_runs/"
-    "smolvla_pressure_state_bs8_20k_pressure_state_bs8_20k_20260715_161801/"
-    "checkpoints/020000/pretrained_model"
+    "smolvla_pressure_state_sigmoid_bs8_20k_20260720/checkpoints/020000/pretrained_model"
 )
 DEFAULT_DATASET_ROOT = REPO_ROOT / "lerobot_conversion/outputs/robot_records_7_03_1_delta_tcp"
 DEFAULT_KOOPMAN_CHECKPOINT = REPO_ROOT / (
@@ -96,8 +97,14 @@ def main() -> None:
     parser.add_argument("--first-action-timeout-s", type=float, default=120.0)
     parser.add_argument("--action-print-interval-steps", type=int, default=10)
     parser.add_argument("--initial-gripper-open", type=float, default=1.0)
-    parser.add_argument("--gripper-close-threshold", type=float, default=0.1)
-    parser.add_argument("--gripper-open-threshold", type=float, default=0.999999)
+    parser.add_argument(
+        "--sigmoid-bounded-gripper",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override checkpoint metadata detection (default: auto-detect).",
+    )
+    parser.add_argument("--gripper-close-threshold", type=float, default=None)
+    parser.add_argument("--gripper-open-threshold", type=float, default=None)
     parser.add_argument("--episode-end-reset-sleep-s", type=float, default=7.0)
     parser.add_argument("--episode-end-reset-zero-packets", type=int, default=3)
     parser.add_argument("--ip", default="192.168.140.1")
@@ -160,14 +167,37 @@ def main() -> None:
         raise SystemExit("--feedback-gain-scale must be in [0, 1]")
     if not (0.0 <= args.cam1_crop_right_fraction < 1.0):
         raise SystemExit("--cam1-crop-right-fraction must be in [0, 1)")
-    if not (0.0 <= args.gripper_close_threshold < args.gripper_open_threshold <= 1.0):
-        raise SystemExit("gripper thresholds must satisfy 0 <= close < open <= 1")
-
     def resolve(path: Path) -> Path:
         return path if path.is_absolute() else REPO_ROOT / path
 
     checkpoint = resolve(args.checkpoint)
     validate_pressure_state_checkpoint_schema(checkpoint)
+    sigmoid_bounded_gripper, sigmoid_gripper_source = _resolve_sigmoid_bounded_gripper(
+        checkpoint,
+        override=args.sigmoid_bounded_gripper,
+    )
+    gripper_close_threshold = args.gripper_close_threshold
+    gripper_open_threshold = args.gripper_open_threshold
+    if gripper_close_threshold is None:
+        gripper_close_threshold = 0.2 if sigmoid_bounded_gripper else 0.0
+    if gripper_open_threshold is None:
+        gripper_open_threshold = 0.8 if sigmoid_bounded_gripper else 1.0
+    if not (
+        math.isfinite(gripper_close_threshold)
+        and math.isfinite(gripper_open_threshold)
+        and gripper_close_threshold < gripper_open_threshold
+    ):
+        raise SystemExit("gripper thresholds must be finite and satisfy close < open")
+    if sigmoid_bounded_gripper and not (
+        0.0 <= gripper_close_threshold < gripper_open_threshold <= 1.0
+    ):
+        raise SystemExit("sigmoid gripper thresholds must satisfy 0 <= close < open <= 1")
+    print(
+        "[soft_vla] resolved gripper contract: "
+        f"sigmoid_bounded={sigmoid_bounded_gripper} source={sigmoid_gripper_source} "
+        f"thresholds={gripper_close_threshold}/{gripper_open_threshold}",
+        flush=True,
+    )
     report = run_smolvla_human_intervention_runtime(
         HumanInterventionRuntimeConfig(
             duration_s=args.duration_s,
@@ -240,8 +270,9 @@ def main() -> None:
             first_action_timeout_s=args.first_action_timeout_s,
             action_print_interval_steps=args.action_print_interval_steps,
             initial_gripper_open=args.initial_gripper_open,
-            gripper_close_threshold=args.gripper_close_threshold,
-            gripper_open_threshold=args.gripper_open_threshold,
+            sigmoid_bounded_gripper=args.sigmoid_bounded_gripper,
+            gripper_close_threshold=gripper_close_threshold,
+            gripper_open_threshold=gripper_open_threshold,
             episode_end_reset_sleep_s=args.episode_end_reset_sleep_s,
             episode_end_reset_zero_packets=args.episode_end_reset_zero_packets,
             gamepad_backend=args.gamepad_backend,

@@ -13,13 +13,11 @@ import numpy as np
 import sys as _sys
 from pathlib import Path as _Path
 
-_COMPONENTS_DIR = _Path(__file__).resolve().parents[1] / "components"
-if str(_COMPONENTS_DIR) not in _sys.path:
-    _sys.path.insert(0, str(_COMPONENTS_DIR))
-
-from bootstrap import add_src_to_path
-
-add_src_to_path()
+_DATA_COLLECTION_DIR = _Path(__file__).resolve().parent
+_REPO_ROOT = _DATA_COLLECTION_DIR.parent
+_SOFT_VLA_SRC = _REPO_ROOT / "soft_vla" / "src"
+if str(_SOFT_VLA_SRC) not in _sys.path:
+    _sys.path.insert(0, str(_SOFT_VLA_SRC))
 
 from soft_vla.motion_control.reference_generator import gripper_open_to_pressure4
 from soft_vla.real_robot.pressure_driver import (
@@ -323,7 +321,11 @@ def build_argparser() -> argparse.ArgumentParser:
         action="store_true",
         help="Continue a matching interrupted run, skipping contiguous existing episode files.",
     )
-    parser.add_argument("--output-dir", type=Path, default=Path("Collected_Data/koopman_pressure16"))
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=_DATA_COLLECTION_DIR / "Collected_Data" / "koopman_pressure16",
+    )
     parser.add_argument("--ip", default="192.168.140.1")
     parser.add_argument("--rigid-body-id", type=int, default=1)
     parser.add_argument("--receive-timeout-ms", type=int, default=1000)

@@ -102,6 +102,7 @@ class SmolVLAAsyncRuntimeConfig:
     wait_for_start_key: bool = False
     action_print_interval_steps: int = 10
     initial_gripper_open: float = 1.0
+    sigmoid_bounded_gripper: bool | None = None
     gripper_close_threshold: float = 0.2
     gripper_open_threshold: float = 0.8
     wait_for_first_action_chunk: bool = True
@@ -909,6 +910,10 @@ def smolvla_real_inference_process(
         raise ValueError("dataset_root is required when real_policy=True")
 
     checkpoint = Path(config.checkpoint)
+    sigmoid_bounded_gripper, sigmoid_gripper_source = _resolve_sigmoid_bounded_gripper(
+        checkpoint,
+        override=config.sigmoid_bounded_gripper,
+    )
     device = config.device
     policy = SmolVLAPolicy.from_pretrained(checkpoint, local_files_only=True)
     policy.config.device = device
@@ -920,7 +925,11 @@ def smolvla_real_inference_process(
         pretrained_path=str(checkpoint),
         preprocessor_overrides={"device_processor": {"device": device}},
     )
-    print(f"[soft_vla] SmolVLA weights initialized: checkpoint={checkpoint}, device={device}", flush=True)
+    print(
+        f"[soft_vla] SmolVLA weights initialized: checkpoint={checkpoint}, device={device}, "
+        f"sigmoid_bounded_gripper={sigmoid_bounded_gripper} ({sigmoid_gripper_source})",
+        flush=True,
+    )
     vla_policy_ready.set()
     _wait_for_run_start(stop_event, run_start)
     if stop_event.is_set():
@@ -1043,6 +1052,8 @@ def smolvla_real_inference_process(
             with torch.no_grad(), torch.amp.autocast(device_type, enabled=(device_type == "cuda" and config.use_amp)):
                 action_chunk = policy.predict_action_chunk(batch)
             raw_chunk = postprocessor.process_action(action_chunk).detach().cpu().numpy().astype(np.float32)
+            if sigmoid_bounded_gripper:
+                raw_chunk = _apply_sigmoid_to_gripper_action_chunk(raw_chunk)
             end_ns = time.monotonic_ns()
             result_tick = _result_tick_for_request(config, pending_request, end_ns)
             if warmup_ms is None:
@@ -1102,6 +1113,8 @@ def smolvla_real_inference_process(
                     "observation_source": observation_source,
                     "inference_image_shapes": inference_image_shapes,
                     "cam1_crop_right_fraction": config.cam1_crop_right_fraction,
+                    "sigmoid_bounded_gripper": sigmoid_bounded_gripper,
+                    "sigmoid_gripper_source": sigmoid_gripper_source,
                     "chunk_shape": list(chunk.shape),
                     "latency_ms": (end_ns - start_ns) / 1_000_000.0,
                     "inference_latency_ms": (end_ns - request_time_ns) / 1_000_000.0,
@@ -1139,6 +1152,8 @@ def smolvla_real_inference_process(
                 "episode_observation_errors": episode_observation_stats["errors"],
                 "warmup_ms": warmup_ms,
                 "cam1_crop_right_fraction": config.cam1_crop_right_fraction,
+                "sigmoid_bounded_gripper": sigmoid_bounded_gripper,
+                "sigmoid_gripper_source": sigmoid_gripper_source,
                 "timing": timing.summary(),
             },
         }
@@ -1629,6 +1644,65 @@ def _wait_for_keypress() -> None:
         input()
 
 
+def _apply_sigmoid_to_gripper_action_chunk(
+    actions: np.ndarray,
+    *,
+    gripper_index: int = 6,
+) -> np.ndarray:
+    """Convert the sigmoid-trained gripper logit to a bounded probability."""
+    bounded = np.asarray(actions, dtype=np.float32).copy()
+    if bounded.ndim < 1 or bounded.shape[-1] <= gripper_index:
+        raise ValueError(
+            f"action chunk must end with gripper index {gripper_index}, got shape {bounded.shape}"
+        )
+    logits = np.clip(bounded[..., gripper_index], -60.0, 60.0)
+    bounded[..., gripper_index] = 1.0 / (1.0 + np.exp(-logits))
+    return bounded
+
+
+def _resolve_sigmoid_bounded_gripper(
+    checkpoint: Path,
+    *,
+    override: bool | None,
+) -> tuple[bool, str]:
+    """Resolve the gripper-head contract from an override or checkpoint metadata."""
+    if override is not None:
+        return bool(override), "cli_override"
+
+    candidates = [
+        checkpoint / "config.json",
+        checkpoint / "train_config.json",
+    ]
+    if len(checkpoint.parents) >= 3:
+        candidates.append(checkpoint.parents[2] / "train_summary.json")
+
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        value = _find_sigmoid_bounded_gripper_flag(payload)
+        if value is not None:
+            return value, str(path)
+    return False, "checkpoint_metadata_absent"
+
+
+def _find_sigmoid_bounded_gripper_flag(payload: Any) -> bool | None:
+    if not isinstance(payload, dict):
+        return None
+    head = payload.get("gripper_action_head")
+    if isinstance(head, dict) and "sigmoid_bounded" in head:
+        return bool(head["sigmoid_bounded"])
+    for key in ("config", "training", "policy"):
+        nested = payload.get(key)
+        value = _find_sigmoid_bounded_gripper_flag(nested)
+        if value is not None:
+            return value
+    return None
+
+
 def _postprocess_gripper_sequence(
     values: np.ndarray,
     *,
@@ -1638,8 +1712,8 @@ def _postprocess_gripper_sequence(
 ) -> np.ndarray:
     close = float(close_threshold)
     open_ = float(open_threshold)
-    if not 0.0 <= close < open_ <= 1.0:
-        raise ValueError(f"gripper thresholds must satisfy 0 <= close < open <= 1, got close={close}, open={open_}")
+    if not np.isfinite(close) or not np.isfinite(open_) or close >= open_:
+        raise ValueError(f"gripper thresholds must be finite and satisfy close < open, got close={close}, open={open_}")
     state = 1.0 if float(previous_gripper) >= 0.5 else 0.0
     out = np.zeros_like(np.asarray(values, dtype=np.float32), dtype=np.float32)
     for i, raw in enumerate(np.asarray(values, dtype=np.float32).reshape(-1)):

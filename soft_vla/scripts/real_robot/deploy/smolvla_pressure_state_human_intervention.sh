@@ -6,6 +6,8 @@ set -euo pipefail
 # 控制语义：
 #   state25  = [12D 运动状态, 1D 夹爪状态, 当前12D归一化压力指令]
 #   action19 = [6D delta TCP, 1D夹爪动作, 12D压力指令偏差]
+#   runtime 从 checkpoint 训练元数据自动识别 sigmoid gripper；启用后 action[6] 先做 sigmoid，
+#   再经过0.2/0.8滞回阈值。
 #   正常执行：VLA delta TCP -> target state；VLA pressure delta -> 前馈压力。
 #   人工介入：手柄替换 VLA delta TCP/夹爪来定义 target state；实际执行 pressure delta=0，
 #             即保持当前压力作为前馈；VLA pressure delta 仅作 shadow 记录；
@@ -60,7 +62,9 @@ ACTION_PRINT_INTERVAL_STEPS=${ACTION_PRINT_INTERVAL_STEPS:-10}
 FIRST_ACTION_TIMEOUT_S=${FIRST_ACTION_TIMEOUT_S:-120}
 
 # ===== 模型与运动控制 =====
-CHECKPOINT=${CHECKPOINT:-"$ROOT/soft_vla/outputs/full_runs/smolvla_pressure_state_bs8_20k_pressure_state_bs8_20k_20260715_161801/checkpoints/020000/pretrained_model"}
+MODEL_RUN_DIR=${MODEL_RUN_DIR:-"$ROOT/soft_vla/outputs/full_runs/smolvla_pressure_state_sigmoid_bs8_20k_20260720"}
+CHECKPOINT_STEP=${CHECKPOINT_STEP:-020000}
+CHECKPOINT=${CHECKPOINT:-"${MODEL_RUN_DIR}/checkpoints/${CHECKPOINT_STEP}/pretrained_model"}
 DATASET_ROOT=${DATASET_ROOT:-"$ROOT/lerobot_conversion/outputs/robot_records_7_03_1_delta_tcp"}
 REPO_ID=${REPO_ID:-local/soft_robot_7_03_1_delta_tcp}
 KOOPMAN_CHECKPOINT=${KOOPMAN_CHECKPOINT:-"$ROOT/motion_control_training/koopman/experiments/fullA_history_v2/runs/koopman_pressure16_fullA_history_v2_smoke_model_hparams_fullwindows_epoch1000_wandb_online_20260716/best.pt"}
@@ -85,7 +89,6 @@ if [[ "$RESET_INTEGRAL_ON_TARGET" != "0" && "$RESET_INTEGRAL_ON_TARGET" != "1" ]
   echo "[soft_vla] RESET_INTEGRAL_ON_TARGET must be 0 or 1, got $RESET_INTEGRAL_ON_TARGET" >&2
   exit 2
 fi
-
 # ===== Xbox 人工介入（映射与原 human-intervention 脚本一致） =====
 GAMEPAD_BACKEND=${GAMEPAD_BACKEND:-evdev}
 GAMEPAD_DEVICE_PATH=${GAMEPAD_DEVICE_PATH:-}
@@ -204,8 +207,6 @@ args=(
   --motion-policy-ready-timeout-s "$MOTION_POLICY_READY_TIMEOUT_S"
   --action-print-interval-steps "$ACTION_PRINT_INTERVAL_STEPS"
   --initial-gripper-open "$INITIAL_GRIPPER_OPEN"
-  --gripper-close-threshold "$GRIPPER_CLOSE_THRESHOLD"
-  --gripper-open-threshold "$GRIPPER_OPEN_THRESHOLD"
   --episode-end-reset-sleep-s "$EPISODE_END_RESET_SLEEP_S"
   --episode-end-reset-zero-packets "$EPISODE_END_RESET_ZERO_PACKETS"
   --first-action-timeout-s "$FIRST_ACTION_TIMEOUT_S"
@@ -248,6 +249,8 @@ args=(
 
 [[ -n "$FIXED_K_PATH" ]] && args+=(--fixed-k-path "$FIXED_K_PATH")
 [[ "$RESET_INTEGRAL_ON_TARGET" == "1" ]] && args+=(--reset-integral-on-target)
+[[ -n "$GRIPPER_CLOSE_THRESHOLD" ]] && args+=(--gripper-close-threshold "$GRIPPER_CLOSE_THRESHOLD")
+[[ -n "$GRIPPER_OPEN_THRESHOLD" ]] && args+=(--gripper-open-threshold "$GRIPPER_OPEN_THRESHOLD")
 [[ -n "$GAMEPAD_DEVICE_PATH" ]] && args+=(--gamepad-device-path "$GAMEPAD_DEVICE_PATH")
 [[ -n "$ZED_INDEX" ]] && args+=(--zed-index "$ZED_INDEX")
 [[ -n "$MAX_INFERENCE_CHUNKS" ]] && args+=(--max-inference-chunks "$MAX_INFERENCE_CHUNKS")
@@ -270,6 +273,7 @@ args=(
 [[ "$GAMEPAD_DEBUG" == "1" ]] && args+=(--print-gamepad-events)
 
 echo "[soft_vla] pressure-state human intervention: VLA_BACKEND=$VLA_BACKEND MODE=$MODE feedback=$FEEDBACK"
+echo "[soft_vla] gripper: sigmoid_bounded=auto_from_checkpoint thresholds=${GRIPPER_CLOSE_THRESHOLD:-auto}/${GRIPPER_OPEN_THRESHOLD:-auto} checkpoint=$CHECKPOINT"
 echo "[soft_vla] Koopman: architecture=$KOOPMAN_ARCHITECTURE checkpoint=$KOOPMAN_CHECKPOINT reset_integral_on_target=$RESET_INTEGRAL_ON_TARGET"
 echo "[soft_vla] arbitration: human replaces delta TCP target and executes pressure_delta=0; VLA pressure stays shadow-only"
 echo "[soft_vla] episode data: $EPISODE_SAVE_ROOT/episode_NNNN/data.csv"

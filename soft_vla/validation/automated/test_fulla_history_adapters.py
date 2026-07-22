@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import unittest
+import sys
 from pathlib import Path
 
 import numpy as np
+
+ROOT = Path(__file__).resolve().parents[3]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from soft_vla.motion_control.fulla_history_adapters import (
     FullAHistoryKoopmanAdapter,
@@ -11,8 +16,6 @@ from soft_vla.motion_control.fulla_history_adapters import (
 )
 from soft_vla.motion_control.feedforward_adapters import FeedforwardPressureConfig, FeedforwardPressureMLPAdapter
 
-
-ROOT = Path(__file__).resolve().parents[3]
 PRESSURE_CHECKPOINT = (
     ROOT / "motion_control_training/feedforward_pressure/runs/tcp6_target_raw_pressure/best.pt"
 )

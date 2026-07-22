@@ -86,5 +86,5 @@ md/
 soft_vla/archive/
 autodl_release/upload/
 data_collection/robot_records_7_03_1/
-Collected_Data/
+data_collection/Collected_Data/
 Seg3_Collect_Orig_Data.py

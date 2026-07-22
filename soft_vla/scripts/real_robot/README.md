@@ -8,7 +8,9 @@
 - `deploy/`：稳定的 SmolVLA 实物部署入口，日常部署只需要关注这里。
 - `replay/`：episode 回放入口与回放执行器。
 - `components/`：部署/回放依赖的 Python 入口，以及 K 构建、打包和校验工具。
-- `diagnostics/`：手柄、相机、气压、HIL、单点控制、数据采集、dry-run 和 debug 工具。
+- `diagnostics/`：仅保留 LuMo、气压、相机、手柄、安全空载和人工介入 dry-run 等关键检查。
+
+Koopman 气压数据采集已集中到仓库根目录的 `data_collection/`，与本地采集数据放在一起。
 
 ## 正式部署入口
 
