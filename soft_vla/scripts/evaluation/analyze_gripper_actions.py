@@ -8,6 +8,13 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
+import sys as _sys
+from pathlib import Path as _Path
+
+_SCRIPTS_DIR = _Path(__file__).resolve().parents[1]
+if str(_SCRIPTS_DIR) not in _sys.path:
+    _sys.path.insert(0, str(_SCRIPTS_DIR))
+
 from _bootstrap import add_src_to_path
 
 PROJECT_ROOT = add_src_to_path()

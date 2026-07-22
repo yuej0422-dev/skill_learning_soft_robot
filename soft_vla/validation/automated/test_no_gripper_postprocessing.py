@@ -9,7 +9,7 @@ class NoGripperPostprocessingTest(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         paths = [
             root / "scripts" / "offline_inference.py",
-            root / "scripts" / "compare_chunk_execution.py",
+            root / "scripts" / "evaluation" / "compare_chunk_execution.py",
             root / "src" / "soft_vla" / "inference",
         ]
         text = ""
