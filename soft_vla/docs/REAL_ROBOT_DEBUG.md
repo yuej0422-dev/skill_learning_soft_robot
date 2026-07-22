@@ -8,7 +8,7 @@
 
 ```bash
 /home/cao/miniconda3/envs/soft_vla_cuda/bin/python \
-  soft_vla/scripts/run_nonhardware_control_validation.py \
+  soft_vla/scripts/real_robot/diagnostics/run_nonhardware_control_validation.py \
   --episode-index 0 \
   --max-frames 3 \
   --device cpu
@@ -44,7 +44,7 @@ failed: []
 ```bash
 cd /home/cao/skill_learning_soft_robot
 
-soft_vla/scripts/package_real_robot_deploy.sh \
+soft_vla/scripts/real_robot/components/package_real_robot_deploy.sh \
   --with-smolvla \
   --with-smolvla-extra \
   --with-lerobot-videos \
@@ -133,7 +133,7 @@ ip neigh show dev enp12s0
 
 ```bash
 /home/cao/miniconda3/envs/soft_vla_cuda/bin/python \
-  soft_vla/scripts/hil_read_lumo_state.py \
+  soft_vla/scripts/real_robot/diagnostics/hil_read_lumo_state.py \
   --hardware-enabled \
   --ip 192.168.140.1 \
   --rigid-body-id 1 \
@@ -155,7 +155,7 @@ ip neigh show dev enp12s0
 
 ```bash
 /home/cao/miniconda3/envs/soft_vla_cuda/bin/python \
-  soft_vla/scripts/test_pressure_driver.py \
+  soft_vla/scripts/real_robot/diagnostics/test_pressure_driver.py \
   --packet-channels 16 \
   --pressure 0.0
 ```
@@ -164,7 +164,7 @@ ip neigh show dev enp12s0
 
 ```bash
 /home/cao/miniconda3/envs/soft_vla_cuda/bin/python \
-  soft_vla/scripts/test_pressure_driver.py \
+  soft_vla/scripts/real_robot/diagnostics/test_pressure_driver.py \
   --real \
   --port /dev/serial/by-id/usb-1a86_USB2.0-Ser_-if00-port0 \
   --baudrate 115200 \
@@ -184,7 +184,7 @@ ip neigh show dev enp12s0
 
 ```bash
 /home/cao/miniconda3/envs/soft_vla_cuda/bin/python \
-  soft_vla/scripts/hil_idle_50hz.py \
+  soft_vla/scripts/real_robot/diagnostics/hil_idle_50hz.py \
   --hardware-enabled \
   --ip 192.168.140.1 \
   --rigid-body-id 1 \
@@ -208,7 +208,7 @@ ip neigh show dev enp12s0
 
 ```bash
 /home/cao/miniconda3/envs/soft_vla_cuda/bin/python \
-  soft_vla/scripts/debug_single_point_target_real.py \
+  soft_vla/scripts/real_robot/diagnostics/debug_single_point_target_real.py \
   --mock \
   --target-delta 0.001,0,0,0,0,0 \
   --duration-s 2 \
@@ -234,7 +234,7 @@ ip neigh show dev enp12s0
 
 ```bash
 /home/cao/miniconda3/envs/soft_vla_cuda/bin/python \
-  soft_vla/scripts/debug_single_point_target_real.py \
+  soft_vla/scripts/real_robot/diagnostics/debug_single_point_target_real.py \
   --hardware-enabled \
   --ip 192.168.140.1 \
   --rigid-body-id 1 \
@@ -277,7 +277,7 @@ LuMo measured state[:12]
 
 ```bash
 /home/cao/miniconda3/envs/soft_vla_cuda/bin/python \
-  soft_vla/scripts/dry_run_episode_motion_control.py \
+  soft_vla/scripts/real_robot/diagnostics/dry_run_episode_motion_control.py \
   --episode-index 0 \
   --max-frames 20 \
   --feedforward pressure_model \
@@ -299,7 +299,7 @@ LuMo measured state[:12]
 
 ```bash
 /home/cao/miniconda3/envs/soft_vla_cuda/bin/python \
-  soft_vla/scripts/replay_episode_real.py \
+  soft_vla/scripts/real_robot/replay/replay_episode_real.py \
   --mock \
   --episode-index 0 \
   --max-frames 5 \
@@ -313,15 +313,15 @@ LuMo measured state[:12]
   --q-latent-weight 0.1 \
   --q-integral-weight 0.5 \
   --r-weight 10.0 \
-  --log-jsonl /home/cao/skill_learning_soft_robot/soft_vla/tests/tmp/soft_vla_replay_mock.jsonl \
-  --plot-path /home/cao/skill_learning_soft_robot/soft_vla/tests/tmp/soft_vla_replay_mock.png
+  --log-jsonl /home/cao/skill_learning_soft_robot/soft_vla/artifacts/real_robot/soft_vla_replay_mock.jsonl \
+  --plot-path /home/cao/skill_learning_soft_robot/soft_vla/artifacts/real_robot/soft_vla_replay_mock.png
 ```
 
 真实小幅 episode replay 只有完成 HIL idle 与单点目标后再打开：
 
 ```bash
 /home/cao/miniconda3/envs/soft_vla_cuda/bin/python \
-  soft_vla/scripts/replay_episode_real.py \
+  soft_vla/scripts/real_robot/replay/replay_episode_real.py \
   --hardware-enabled \
   --ip 192.168.140.1 \
   --rigid-body-id 1 \
@@ -339,8 +339,8 @@ LuMo measured state[:12]
   --q-latent-weight 0.1 \
   --q-integral-weight 0.5 \
   --r-weight 10.0 \
-  --log-jsonl /home/cao/skill_learning_soft_robot/soft_vla/tests/tmp/soft_vla_replay_real_ep0_small.jsonl \
-  --plot-path /home/cao/skill_learning_soft_robot/soft_vla/tests/tmp/soft_vla_replay_real_ep0_small.png
+  --log-jsonl /home/cao/skill_learning_soft_robot/soft_vla/artifacts/real_robot/soft_vla_replay_real_ep0_small.jsonl \
+  --plot-path /home/cao/skill_learning_soft_robot/soft_vla/artifacts/real_robot/soft_vla_replay_real_ep0_small.png
 ```
 
 验收：
@@ -363,7 +363,7 @@ LuMo measured state[:12]
 
 ```bash
 /home/cao/miniconda3/envs/soft_vla_cuda/bin/python \
-  soft_vla/scripts/build_fixed_k_integral.py \
+  soft_vla/scripts/real_robot/components/build_fixed_k_integral.py \
   --output /tmp/soft_vla_fixed_k_integral.npz \
   --q-tcp6-weight 1.0 \
   --q-state-tail-weight 0.1 \
@@ -386,7 +386,7 @@ SmolVLA 实物部署框架按 4 个异步进程拆分：
 IO 仍是 mock：
 
 ```bash
-bash soft_vla/scripts/smolvla_deploy.sh
+bash soft_vla/scripts/real_robot/deploy/smolvla_deploy.sh
 ```
 
 验收：
@@ -404,7 +404,7 @@ bash soft_vla/scripts/smolvla_deploy.sh
 
 ```bash
 VLA_BACKEND=smolvla MAX_INFERENCE_CHUNKS=1 DURATION_S=12 \
-  bash soft_vla/scripts/smolvla_deploy.sh
+  bash soft_vla/scripts/real_robot/deploy/smolvla_deploy.sh
 ```
 
 再跑实时三路相机 smoke。采集代码中 `cam_1` 是 ZED left，`cam_2/cam_3`
@@ -425,9 +425,9 @@ VLA_BACKEND=smolvla MAX_INFERENCE_CHUNKS=1 DURATION_S=12 \
 
 ```bash
 /home/cao/miniconda3/envs/soft_vla_cuda/bin/python \
-  soft_vla/scripts/smoke_live_cameras.py \
+  soft_vla/scripts/real_robot/diagnostics/smoke_live_cameras.py \
   --zed-eye left \
-  --output-dir soft_vla/tests/tmp/camera_smoke_live
+  --output-dir soft_vla/artifacts/real_robot/camera_smoke_live
 ```
 
 验收：
@@ -441,7 +441,7 @@ VLA_BACKEND=smolvla MAX_INFERENCE_CHUNKS=1 DURATION_S=12 \
 
 ```bash
 VLA_BACKEND=smolvla LIVE_OBSERVATION=1 MAX_INFERENCE_CHUNKS=1 DURATION_S=20 \
-  bash soft_vla/scripts/smolvla_deploy.sh
+  bash soft_vla/scripts/real_robot/deploy/smolvla_deploy.sh
 ```
 
 如果要同时连接真实 LuMo 动捕、但仍不打开串口压力输出，使用 `STATE_HARDWARE=1`。
@@ -453,7 +453,7 @@ STATE_HARDWARE=1 VLA_BACKEND=smolvla LIVE_OBSERVATION=1 \
   CAMERA_PREVIEW=1 MODE=receding_horizon \
   MAX_INFERENCE_CHUNKS=1 DURATION_S=20 \
   RUN_LABEL=smolvla_live_mocap_receding_horizon_mock_pressure \
-  bash soft_vla/scripts/smolvla_deploy.sh
+  bash soft_vla/scripts/real_robot/deploy/smolvla_deploy.sh
 ```
 
 预览说明：
@@ -466,14 +466,14 @@ STATE_HARDWARE=1 VLA_BACKEND=smolvla LIVE_OBSERVATION=1 \
 
 ```bash
 RUN_HARDWARE=1 VLA_BACKEND=smolvla LIVE_OBSERVATION=1 \
-  bash soft_vla/scripts/smolvla_deploy.sh
+  bash soft_vla/scripts/real_robot/deploy/smolvla_deploy.sh
 ```
 
 可一次性尝试几种部署模式：
 
 ```bash
 /home/cao/miniconda3/envs/soft_vla_cuda/bin/python \
-  soft_vla/scripts/benchmark_smolvla_deploy_modes.py \
+  soft_vla/scripts/real_robot/diagnostics/benchmark_smolvla_deploy_modes.py \
   --real-policy \
   --modes receding_horizon temporal_ensemble chunk single_step \
   --duration-s 60 \

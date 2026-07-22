@@ -463,7 +463,7 @@ max: 约 5 ticks
 仅 debug：single_step
 ```
 
-`soft_vla/scripts/smolvla_deploy.sh` 当前默认：
+`soft_vla/scripts/real_robot/deploy/smolvla_deploy.sh` 当前默认：
 
 ```bash
 MODE=${MODE:-receding_horizon}
@@ -477,7 +477,7 @@ CHUNK_TRIGGER_MARGIN=${CHUNK_TRIGGER_MARGIN:-1}
 测试文件：
 
 ```text
-soft_vla/tests/test_async_chunk_time_alignment.py
+soft_vla/validation/automated/test_async_chunk_time_alignment.py
 ```
 
 覆盖内容：

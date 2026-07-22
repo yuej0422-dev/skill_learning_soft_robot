@@ -38,7 +38,7 @@ vision_to_state/lerobot_v3*/
 
 # Local bulk datasets and captured robot episodes
 soft_vla/data/
-soft_vla/tests/tmp/
+soft_vla/artifacts/
 data_collection/robot_records_*/
 motion_control_training/reference/KORL/dataset_orig/
 
@@ -86,3 +86,5 @@ md/
 soft_vla/archive/
 autodl_release/upload/
 data_collection/robot_records_7_03_1/
+Collected_Data/
+Seg3_Collect_Orig_Data.py

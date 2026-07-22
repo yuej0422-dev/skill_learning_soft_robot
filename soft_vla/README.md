@@ -52,6 +52,18 @@ cd /home/yuej/skill_learning_soft_robot/soft_vla
 - Latest output: `outputs/smolvla_real_7_03_1_full_finetune_smoke`
 - Latest inference output: `outputs/offline_inference_real_7_03_1_smoke`
 
+## Real-robot Commands
+
+Real-robot deployment, replay, reusable command components, and hardware test
+utilities are grouped under [`scripts/real_robot`](scripts/real_robot/README.md).
+Use `scripts/real_robot/deploy/` for normal SmolVLA deployment and
+`scripts/real_robot/replay/` for episode replay; hardware bring-up and debug
+commands live under `scripts/real_robot/diagnostics/`.
+
+The less frequently used automated regression suite lives under
+`validation/automated/`. Running `pytest` from this project directory still
+discovers it through the configuration in `pyproject.toml`.
+
 ## Archive
 
 Older synthetic, 5-episode, gripper-comparison, chunk-execution, and deployment-bundle artifacts were moved to:
