@@ -22,7 +22,7 @@ export LD_LIBRARY_PATH="/home/cao/miniconda3/envs/soft_vla_cuda/lib:${LD_LIBRARY
 #   MAX_FRAMES=2 PRESSURE_SCALE=0.2 bash soft_vla/scripts/epis_replay_fullA_history_v2.sh
 # 离线生成临时固定 K 后回放：
 #   TARGET_FREQUENCY=10 MAX_FRAMES=0 KOOPMAN_CHECKPOINT=/home/cao/skill_learning_soft_robot/motion_control_training/koopman/experiments/fullA_history_v2/runs/robot_records_7_03_1_delta_tcp_fullA_history_v2_10hz_k50_hist10_epoch3000_wandb_online_20260712_2313/best.pt FREQUENCY=10 FEEDBACK=fixed_k_integral bash soft_vla/scripts/epis_replay_fullA_history_v2.sh
-#   TARGET_FREQUENCY=10 MAX_FRAMES=0 FREQUENCY=50 FEEDBACK=fixed_k_integral bash soft_vla/scripts/epis_replay_fullA_history_v2.sh
+#   TARGET_FREQUENCY=0.1 MAX_FRAMES=2 FREQUENCY=50 FEEDBACK=fixed_k_integral bash soft_vla/scripts/epis_replay_fullA_history_v2.sh
 
 
 

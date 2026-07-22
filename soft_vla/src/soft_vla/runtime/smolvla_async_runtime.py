@@ -848,6 +848,7 @@ def smolvla_inference_process(
                 "result_tick": result_tick,
                 "result_time_ns": end_ns,
                 "chunk": chunk,
+                "raw_chunk": chunk.copy(),
                 "inference_start_ns": t0,
                 "inference_end_ns": end_ns,
             },
@@ -1057,6 +1058,9 @@ def smolvla_real_inference_process(
                     f"for mode {config.vla_action_mode!r}, got {chunk.shape}"
                 )
             chunk = chunk.copy()
+            # Preserve the model/postprocessor output before the deployment
+            # gripper hysteresis replaces column 6 with a binary command.
+            raw_chunk_before_gripper_threshold = chunk.copy()
             previous_gripper = float(latest_state.get("gripper_open", config.initial_gripper_open))
             chunk[:, 6] = _postprocess_gripper_sequence(
                 chunk[:, 6],
@@ -1074,6 +1078,7 @@ def smolvla_real_inference_process(
                     "result_tick": result_tick,
                     "result_time_ns": end_ns,
                     "chunk": chunk,
+                    "raw_chunk": raw_chunk_before_gripper_threshold,
                     "inference_start_ns": start_ns,
                     "inference_end_ns": end_ns,
                 },

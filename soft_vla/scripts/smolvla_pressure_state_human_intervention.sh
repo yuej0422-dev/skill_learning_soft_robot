@@ -7,7 +7,8 @@ set -euo pipefail
 #   state25  = [12D 运动状态, 1D 夹爪状态, 当前12D归一化压力指令]
 #   action19 = [6D delta TCP, 1D夹爪动作, 12D压力指令偏差]
 #   正常执行：VLA delta TCP -> target state；VLA pressure delta -> 前馈压力。
-#   人工介入：手柄替换 VLA delta TCP/夹爪来定义 target state；VLA 前馈压力保持不变；
+#   人工介入：手柄替换 VLA delta TCP/夹爪来定义 target state；实际执行 pressure delta=0，
+#             即保持当前压力作为前馈；VLA pressure delta 仅作 shadow 记录；
 #             Koopman 50Hz 闭环继续追踪人工 target。
 #   底层使用标准50Hz数据训练的 Full-A history-v2 Koopman（history=30）和 fixed_k_integral；
 #   VLA/人工 target 默认10Hz零阶保持；RESET_INTEGRAL_ON_TARGET=0时积分q跨target保持连续，
@@ -16,7 +17,7 @@ set -euo pipefail
 # 保存格式：
 #   EPISODE_SAVE_ROOT/episode_NNNN/data.csv 与原 human-intervention 格式完全一致；
 #   三相机图片目录名称和编号完全一致；
-#   额外生成 vla_training_data.csv，以 observation_t 对齐实际 t->t+1 的 25D state/19D action；
+#   data.csv 同步保存实际状态/气压、实际执行19D action及阈值前原始 VLA 19D action；
 #   LOG_JSONL 保留每个50Hz周期的 VLA前馈、闭环修正、最终压力和跟踪误差。
 #
 # 推荐测试顺序：
@@ -71,7 +72,7 @@ DEVICE=${DEVICE:-cuda}
 DELTA_TCP_SCALE=${DELTA_TCP_SCALE:-1}
 PRESSURE_DELTA_SCALE=${PRESSURE_DELTA_SCALE:-1}
 PRESSURE_SCALE=${PRESSURE_SCALE:-1}
-FEEDBACK_GAIN_SCALE=${FEEDBACK_GAIN_SCALE:-0.5}
+FEEDBACK_GAIN_SCALE=${FEEDBACK_GAIN_SCALE:-0.25}
 MAX_INTEGRAL_ERROR=${MAX_INTEGRAL_ERROR:-5}
 MOTION_POLICY_READY_TIMEOUT_S=${MOTION_POLICY_READY_TIMEOUT_S:-120}
 Q_TCP6_WEIGHT=${Q_TCP6_WEIGHT:-1.0}
@@ -97,8 +98,8 @@ HUMAN_MAX_DELTA_ROT=${HUMAN_MAX_DELTA_ROT:-0.025}
 ROTATION_ENABLED=${ROTATION_ENABLED:-1}
 ROTATION_AXIS=${ROTATION_AXIS:-pitch_yaw}
 HUMAN_TARGET_INTEGRATION=${HUMAN_TARGET_INTEGRATION:-1}
-HUMAN_TARGET_MAX_POS_OFFSET=${HUMAN_TARGET_MAX_POS_OFFSET:-0.02}
-HUMAN_TARGET_MAX_ROT_OFFSET=${HUMAN_TARGET_MAX_ROT_OFFSET:-0.1}
+HUMAN_TARGET_MAX_POS_OFFSET=${HUMAN_TARGET_MAX_POS_OFFSET:-0.01}
+HUMAN_TARGET_MAX_ROT_OFFSET=${HUMAN_TARGET_MAX_ROT_OFFSET:-0.05}
 HANDOVER_BLEND_STEPS=${HANDOVER_BLEND_STEPS:-2}
 BLEND_TCP_ONLY=${BLEND_TCP_ONLY:-1}
 BLEND_GRIPPER=${BLEND_GRIPPER:-0}
@@ -124,8 +125,8 @@ ZED_WARMUP_USABLE_FRAMES=${ZED_WARMUP_USABLE_FRAMES:-10}
 REALSENSE_WARMUP_USABLE_FRAMES=${REALSENSE_WARMUP_USABLE_FRAMES:-10}
 MIN_REALSENSE_MEAN=${MIN_REALSENSE_MEAN:-40}
 INITIAL_GRIPPER_OPEN=${INITIAL_GRIPPER_OPEN:-1}
-GRIPPER_CLOSE_THRESHOLD=${GRIPPER_CLOSE_THRESHOLD:-0.1}
-GRIPPER_OPEN_THRESHOLD=${GRIPPER_OPEN_THRESHOLD:-0.999999}
+GRIPPER_CLOSE_THRESHOLD=${GRIPPER_CLOSE_THRESHOLD:-0}
+GRIPPER_OPEN_THRESHOLD=${GRIPPER_OPEN_THRESHOLD:-1}
 CAMERA_PREVIEW_SCALE=${CAMERA_PREVIEW_SCALE:-0.5}
 CAMERA_PREVIEW_FPS=${CAMERA_PREVIEW_FPS:-10}
 CAMERA_PREVIEW_WINDOW=${CAMERA_PREVIEW_WINDOW:-soft_vla_pressure_state_human_live_cameras}
@@ -270,7 +271,6 @@ args=(
 
 echo "[soft_vla] pressure-state human intervention: VLA_BACKEND=$VLA_BACKEND MODE=$MODE feedback=$FEEDBACK"
 echo "[soft_vla] Koopman: architecture=$KOOPMAN_ARCHITECTURE checkpoint=$KOOPMAN_CHECKPOINT reset_integral_on_target=$RESET_INTEGRAL_ON_TARGET"
-echo "[soft_vla] arbitration: human replaces delta TCP target; VLA pressure feedforward stays active"
-echo "[soft_vla] legacy episode data: $EPISODE_SAVE_ROOT/episode_NNNN/data.csv"
-echo "[soft_vla] aligned VLA data: $EPISODE_SAVE_ROOT/episode_NNNN/vla_training_data.csv"
+echo "[soft_vla] arbitration: human replaces delta TCP target and executes pressure_delta=0; VLA pressure stays shadow-only"
+echo "[soft_vla] episode data: $EPISODE_SAVE_ROOT/episode_NNNN/data.csv"
 "$PY" "${args[@]}"

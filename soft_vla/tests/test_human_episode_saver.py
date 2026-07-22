@@ -62,7 +62,7 @@ class HumanEpisodeSaverTest(unittest.TestCase):
             self.assertEqual(meta["frame_count"], 1)
             self.assertIn("data_csv", meta)
 
-    def test_pressure_state_sidecar_aligns_observation_t_with_realized_transition(self):
+    def test_pressure_state_data_csv_stores_executed_and_raw_vla_actions_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             saver = PressureStateHumanEpisodeSaver(
                 tmp,
@@ -78,15 +78,10 @@ class HumanEpisodeSaverTest(unittest.TestCase):
                     "observation.images.cam_3": image,
                 },
                 "u_paw4": [3.0, 0.0, 0.0, 0.0],
-                "executed_action": [0.0] * 6 + [1.0],
-                "executed_action_delta_tcp": [0.0] * 6,
-                "executed_action_gripper": 1.0,
-                "vla_action19": list(range(19)),
-                "vla_feedforward_pressure12": [0.4] * 12,
-                "closed_loop_delta_action12": [0.01] * 12,
+                "executed_action": [0.0] * 6 + [1.0] + [0.0] * 12,
+                "vla_action19": [0.1] * 6 + [1.25] + [0.2] * 12,
                 "action_source": "human",
                 "intervention_active": True,
-                "gripper_open": 1.0,
             }
             saver.record_frame(
                 {
@@ -102,38 +97,30 @@ class HumanEpisodeSaverTest(unittest.TestCase):
                     "timestamp": 0.1,
                     "state12": [float(i) + 0.1 for i in range(12)],
                     "u_p12": [0.3] * 12,
-                    "gripper_open": 0.0,
                 }
             )
             meta_path = saver.close_episode(success=True, termination_reason="x_success")
 
             episode_dir = Path(tmp) / "episode_0000"
             with (episode_dir / "data.csv").open(newline="", encoding="utf-8") as fh:
-                legacy_rows = list(csv.DictReader(fh))
-            self.assertEqual(len(legacy_rows), 2)
-            self.assertIn("executed_action1", legacy_rows[0])
-            self.assertNotIn("action.delta_x_pos1", legacy_rows[0])
-
-            with (episode_dir / "vla_training_data.csv").open(newline="", encoding="utf-8") as fh:
                 rows = list(csv.DictReader(fh))
-            self.assertEqual(len(rows), 1)
+            self.assertEqual(len(rows), 2)
             row = rows[0]
             self.assertEqual(row["image1_zed_left"], "000000.jpg")
-            self.assertEqual(int(row["frame_index_t"]), 0)
-            self.assertEqual(int(row["frame_index_t_plus_1"]), 1)
-            self.assertAlmostEqual(float(row["observation.state.x_pos1"]), 0.0)
-            self.assertAlmostEqual(float(row["observation.state.u_p1"]), 0.2)
-            self.assertAlmostEqual(float(row["action.delta_x_pos1"]), 0.1)
-            self.assertAlmostEqual(float(row["action.gripper_target"]), 1.0)
-            # Raw pressure delta is 0.1; action delta is divided by deployment scale 0.5.
-            self.assertAlmostEqual(float(row["raw_command_pressure_delta.1"]), 0.1)
-            self.assertAlmostEqual(float(row["action.delta_u_p1"]), 0.2)
-            self.assertEqual(float(row["shadow_vla_action.19"]), 18.0)
+            self.assertEqual(row["action_source"], "human")
+            self.assertEqual(int(row["intervention_active"]), 1)
+            self.assertAlmostEqual(float(row["u_p1"]), 0.2)
+            self.assertAlmostEqual(float(row["executed_action7"]), 1.0)
+            self.assertAlmostEqual(float(row["executed_action19"]), 0.0)
+            self.assertAlmostEqual(float(row["vla_action7"]), 1.25)
+            self.assertAlmostEqual(float(row["vla_action19"]), 0.2)
+            self.assertAlmostEqual(float(row["x_pos1"]), 0.0)
+            self.assertFalse((episode_dir / "vla_training_data.csv").exists())
 
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            self.assertEqual(meta["vla_training_rows"], 1)
-            self.assertEqual(meta["vla_observation_dim"], 25)
+            self.assertEqual(meta["executed_action_dim"], 19)
             self.assertEqual(meta["vla_action_dim"], 19)
+            self.assertEqual(meta["vla_gripper_semantics"], "raw_before_deployment_threshold")
 
 
 if __name__ == "__main__":

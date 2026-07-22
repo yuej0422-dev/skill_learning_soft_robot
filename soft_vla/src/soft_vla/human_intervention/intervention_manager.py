@@ -60,6 +60,11 @@ class InterventionManager:
     ) -> ArbitrationResult:
         vla = _action_or_hold(vla_action7, self.previous_executed)
         human = _action_or_hold(None if human_command is None else human_command.action7, self.previous_executed)
+        # A neutral human gripper input means "do not override".  In
+        # particular, do not let HumanActionMapper's old latched value change
+        # the gripper merely because TCP intervention started.
+        if human_command is not None and human_command.gripper_command is None:
+            human[6] = self.previous_executed[6]
         connected = True if human_command is None else bool(human_command.gamepad_connected)
         human_active_now = bool(human_command is not None and human_command.active and connected)
         human_norm = 0.0 if human_command is None else float(human_command.input_norm)

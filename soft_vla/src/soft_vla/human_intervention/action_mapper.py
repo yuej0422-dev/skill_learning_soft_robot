@@ -53,6 +53,10 @@ class HumanActionMapper:
         self.previous_action[6] = 1.0 if gripper_open >= 0.5 else 0.0
         self._axis_active = False
 
+    def sync_gripper_state(self, gripper_open: float) -> None:
+        """Synchronize the latched human gripper state with the executed action."""
+        self.previous_action[6] = 1.0 if float(gripper_open) >= 0.5 else 0.0
+
     def map_input(self, state: dict[str, Any], *, current_state12: np.ndarray | None = None) -> HumanCommand:
         cfg = self.config
         lx = _axis_value(state, "left_x")

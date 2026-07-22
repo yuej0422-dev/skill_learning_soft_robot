@@ -34,7 +34,7 @@ class HumanEpisodeSaver:
 
     Differences from ``vla_collect_3cams_v4.py``:
     - no depth folders/columns are written;
-    - each CSV row stores the actually executed 7D deployment action.
+    - each CSV row stores the actually executed deployment action.
     """
 
     def __init__(self, root: str | Path, *, enabled: bool = True, zed_eye: str = "left") -> None:
@@ -55,7 +55,17 @@ class HumanEpisodeSaver:
         self._csv_writer = csv.writer(self._csv_fh) if self._csv_fh is not None else None
         self._image_writer = AsyncImageWriter(enabled=self.enabled)
         if self._csv_writer is not None:
-            self._csv_writer.writerow(_csv_header(self.zed_eye))
+            self._csv_writer.writerow(self._csv_header())
+
+    def _csv_header(self) -> list[str]:
+        return _csv_header(self.zed_eye)
+
+    def _csv_action_values(self, row: dict[str, Any]) -> np.ndarray | None:
+        action = np.asarray(row.get("executed_action", np.zeros(7, dtype=np.float32)), dtype=np.float64).reshape(-1)
+        return action if action.shape == (7,) else None
+
+    def _csv_context_values(self, row: dict[str, Any]) -> list[Any]:
+        return []
 
     def record_frame(self, row: dict[str, Any]) -> None:
         if not self.enabled:
@@ -80,13 +90,13 @@ class HumanEpisodeSaver:
         if not isinstance(images, dict):
             return
         state12 = np.asarray(row.get("state12", np.zeros(12, dtype=np.float32)), dtype=np.float64).reshape(-1)
-        action7 = np.asarray(row.get("executed_action", np.zeros(7, dtype=np.float32)), dtype=np.float64).reshape(-1)
+        action_values = self._csv_action_values(row)
         u_p12 = np.asarray(row.get("u_p12", row.get("motion_norm12", np.zeros(12, dtype=np.float32))), dtype=np.float64).reshape(-1)
         u_paw4 = np.asarray(
             row.get("u_paw4", np.asarray(row.get("pressure16", np.zeros(16, dtype=np.float32)), dtype=np.float64).reshape(-1)[12:16]),
             dtype=np.float64,
         ).reshape(-1)
-        if state12.shape[0] < 12 or action7.shape[0] != 7:
+        if state12.shape[0] < 12 or action_values is None:
             return
         if u_p12.shape[0] != 12:
             u_p12 = np.zeros(12, dtype=np.float64)
@@ -106,9 +116,10 @@ class HumanEpisodeSaver:
                     img_name,
                     img_name,
                     img_name,
+                    *self._csv_context_values(row),
                     *u_p12.astype(float).tolist(),
                     *u_paw4.astype(float).tolist(),
-                    *action7.astype(float).tolist(),
+                    *action_values.astype(float).tolist(),
                     *state12[:12].astype(float).tolist(),
                 ]
             )
@@ -171,19 +182,10 @@ class HumanEpisodeSaver:
 
 
 class PressureStateHumanEpisodeSaver(HumanEpisodeSaver):
-    """Keep the legacy human episode layout and add an aligned 25D/19D sidecar.
+    """Store measured state plus executed and untouched VLA 19D actions.
 
-    ``data.csv`` and the three image directories are still written by
-    :class:`HumanEpisodeSaver` without any schema changes.  The additional
-    ``vla_training_data.csv`` stores observation ``t`` together with the
-    realized transition from ``t`` to ``t + 1``:
-
-    * state25 = state12_t + gripper_t + command_pressure12_t
-    * action19 = (tcp6_{t+1} - tcp6_t) + commanded_gripper_t
-      + (command_pressure12_{t+1} - command_pressure12_t) / pressure_delta_scale
-
-    The final episode frame has no future observation and is intentionally not
-    emitted as a training row.
+    No derived transition sidecar is written.  Realized TCP and pressure
+    changes can be reconstructed later from adjacent rows in ``data.csv``.
     """
 
     def __init__(
@@ -197,26 +199,22 @@ class PressureStateHumanEpisodeSaver(HumanEpisodeSaver):
         if float(pressure_delta_scale) <= 0.0:
             raise ValueError("pressure_delta_scale must be positive when saving pressure-state training data")
         super().__init__(root, enabled=enabled, zed_eye=zed_eye)
-        self.pressure_delta_scale = float(pressure_delta_scale)
-        self.vla_training_csv_path = self.episode_dir / "vla_training_data.csv"
-        self._vla_training_fh = (
-            self.vla_training_csv_path.open("w", newline="", encoding="utf-8") if self.enabled else None
-        )
-        self._vla_training_writer = csv.writer(self._vla_training_fh) if self._vla_training_fh is not None else None
-        if self._vla_training_writer is not None:
-            self._vla_training_writer.writerow(_pressure_state_training_header(self.zed_eye))
-        self._previous_training_frame: dict[str, Any] | None = None
-        self._training_rows = 0
 
-    def record_frame(self, row: dict[str, Any]) -> None:
-        frame_idx = self.stats.frame_idx
-        normalized = self._normalize_training_frame(row, frame_idx=frame_idx)
-        super().record_frame(row)
-        if normalized is None or self.stats.frame_idx != frame_idx + 1:
-            return
-        if self._previous_training_frame is not None:
-            self._write_training_transition(self._previous_training_frame, normalized)
-        self._previous_training_frame = normalized
+    def _csv_header(self) -> list[str]:
+        return _pressure_state_csv_header(self.zed_eye)
+
+    def _csv_action_values(self, row: dict[str, Any]) -> np.ndarray | None:
+        executed = np.asarray(row.get("executed_action"), dtype=np.float64).reshape(-1)
+        vla = np.asarray(row.get("vla_action19"), dtype=np.float64).reshape(-1)
+        if executed.shape != (19,) or vla.shape != (19,):
+            return None
+        return np.concatenate([executed, vla])
+
+    def _csv_context_values(self, row: dict[str, Any]) -> list[Any]:
+        return [
+            str(row.get("action_source", "unknown")),
+            int(bool(row.get("intervention_active", False))),
+        ]
 
     def close_episode(
         self,
@@ -225,10 +223,6 @@ class PressureStateHumanEpisodeSaver(HumanEpisodeSaver):
         failure: bool = False,
         termination_reason: str = "interrupted",
     ) -> Path:
-        if self._vla_training_fh is not None:
-            self._vla_training_fh.close()
-            self._vla_training_fh = None
-            self._vla_training_writer = None
         meta_path = super().close_episode(
             success=success,
             failure=failure,
@@ -238,91 +232,14 @@ class PressureStateHumanEpisodeSaver(HumanEpisodeSaver):
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             meta.update(
                 {
-                    "vla_training_data_csv": str(self.vla_training_csv_path),
-                    "vla_training_rows": self._training_rows,
-                    "vla_observation_dim": 25,
+                    "data_csv_action_schema": "source_flags_then_executed_action19_then_raw_vla_action19",
+                    "executed_action_dim": 19,
                     "vla_action_dim": 19,
-                    "vla_transition_alignment": "observation_t_to_realized_transition_t_plus_1",
-                    "pressure_delta_scale": self.pressure_delta_scale,
+                    "vla_gripper_semantics": "raw_before_deployment_threshold",
                 }
             )
             meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         return meta_path
-
-    def _normalize_training_frame(self, row: dict[str, Any], *, frame_idx: int) -> dict[str, Any] | None:
-        images = row.get("images")
-        if not isinstance(images, dict):
-            return None
-        state12 = np.asarray(row.get("state12"), dtype=np.float64).reshape(-1)
-        pressure12 = np.asarray(row.get("u_p12", row.get("motion_norm12")), dtype=np.float64).reshape(-1)
-        if state12.shape != (12,) or pressure12.shape != (12,):
-            return None
-        if not np.all(np.isfinite(state12)) or not np.all(np.isfinite(pressure12)):
-            return None
-        gripper = float(row.get("gripper_open", row.get("executed_action_gripper", 1.0)))
-        if not np.isfinite(gripper):
-            return None
-        return {
-            "frame_idx": int(frame_idx),
-            "timestamp": float(row.get("timestamp", frame_idx * 0.1)),
-            "image_name": f"{frame_idx:06d}.jpg",
-            "state12": state12,
-            "pressure12": np.clip(pressure12, 0.0, 1.0),
-            "gripper_open": 1.0 if gripper >= 0.5 else 0.0,
-            "gripper_target": 1.0
-            if float(row.get("executed_action_gripper", gripper)) >= 0.5
-            else 0.0,
-            "action_source": str(row.get("action_source", "unknown")),
-            "intervention_active": bool(row.get("intervention_active", False)),
-            "vla_action19": _fixed_vector(row.get("vla_action19"), 19),
-            "commanded_delta_tcp6": _fixed_vector(row.get("executed_action_delta_tcp"), 6),
-            "vla_feedforward_pressure12": _fixed_vector(row.get("vla_feedforward_pressure12"), 12),
-            "closed_loop_delta_action12": _fixed_vector(row.get("closed_loop_delta_action12"), 12),
-        }
-
-    def _write_training_transition(self, current: dict[str, Any], nxt: dict[str, Any]) -> None:
-        if self._vla_training_writer is None:
-            return
-        realized_delta_tcp6 = nxt["state12"][:6] - current["state12"][:6]
-        raw_pressure_delta12 = nxt["pressure12"] - current["pressure12"]
-        action_pressure_delta12 = raw_pressure_delta12 / self.pressure_delta_scale
-        state25 = np.concatenate(
-            [current["state12"], [current["gripper_open"]], current["pressure12"]]
-        )
-        action19 = np.concatenate(
-            [realized_delta_tcp6, [current["gripper_target"]], action_pressure_delta12]
-        )
-        self._vla_training_writer.writerow(
-            [
-                current["timestamp"],
-                current["image_name"],
-                current["image_name"],
-                current["image_name"],
-                current["frame_idx"],
-                nxt["frame_idx"],
-                current["action_source"],
-                int(current["intervention_active"]),
-                *state25.astype(float).tolist(),
-                *action19.astype(float).tolist(),
-                *raw_pressure_delta12.astype(float).tolist(),
-                *current["commanded_delta_tcp6"].astype(float).tolist(),
-                *current["vla_action19"].astype(float).tolist(),
-                *current["vla_feedforward_pressure12"].astype(float).tolist(),
-                *current["closed_loop_delta_action12"].astype(float).tolist(),
-            ]
-        )
-        self._training_rows += 1
-        if self._training_rows % 10 == 0 and self._vla_training_fh is not None:
-            self._vla_training_fh.flush()
-
-
-def _fixed_vector(value: Any, size: int) -> np.ndarray:
-    if value is None:
-        return np.full(size, np.nan, dtype=np.float64)
-    array = np.asarray(value, dtype=np.float64).reshape(-1)
-    if array.shape != (size,):
-        return np.full(size, np.nan, dtype=np.float64)
-    return array
 
 
 class AsyncImageWriter:
@@ -417,8 +334,18 @@ def _csv_header(zed_eye: str) -> list[str]:
     ]
 
 
-def _pressure_state_training_header(zed_eye: str) -> list[str]:
-    state_names = [
+def _pressure_state_csv_header(zed_eye: str) -> list[str]:
+    return [
+        "timestamp",
+        f"image1_zed_{zed_eye}",
+        "image2",
+        "image3",
+        "action_source",
+        "intervention_active",
+        *[f"u_p{i}" for i in range(1, 13)],
+        *[f"u_paw{i}" for i in range(1, 5)],
+        *[f"executed_action{i}" for i in range(1, 20)],
+        *[f"vla_action{i}" for i in range(1, 20)],
         "x_pos1",
         "x_pos2",
         "x_pos3",
@@ -431,33 +358,4 @@ def _pressure_state_training_header(zed_eye: str) -> list[str]:
         "x_ang_radian_vel1",
         "x_ang_radian_vel2",
         "x_ang_radian_vel3",
-        "gripper_open",
-        *[f"u_p{i}" for i in range(1, 13)],
-    ]
-    action_names = [
-        "delta_x_pos1",
-        "delta_x_pos2",
-        "delta_x_pos3",
-        "delta_x_ang_radian1",
-        "delta_x_ang_radian2",
-        "delta_x_ang_radian3",
-        "gripper_target",
-        *[f"delta_u_p{i}" for i in range(1, 13)],
-    ]
-    return [
-        "timestamp",
-        f"image1_zed_{zed_eye}",
-        "image2",
-        "image3",
-        "frame_index_t",
-        "frame_index_t_plus_1",
-        "action_source",
-        "intervention_active",
-        *[f"observation.state.{name}" for name in state_names],
-        *[f"action.{name}" for name in action_names],
-        *[f"raw_command_pressure_delta.{i}" for i in range(1, 13)],
-        *[f"commanded_delta_tcp.{i}" for i in range(1, 7)],
-        *[f"shadow_vla_action.{i}" for i in range(1, 20)],
-        *[f"vla_feedforward_pressure.{i}" for i in range(1, 13)],
-        *[f"closed_loop_delta_action.{i}" for i in range(1, 13)],
     ]

@@ -28,6 +28,7 @@ from soft_vla.runtime.smolvla_async_runtime import (
     logger_process,
     smolvla_inference_process,
     _best_effort_put,
+    _current_pressure_norm12,
     _decode_vla_action,
     _drain_put,
     _install_stop_signal_handlers,
@@ -172,13 +173,7 @@ def run_smolvla_human_intervention_runtime(config: HumanInterventionRuntimeConfi
         else:
             run_start.set()
         _wait_for_first_action_chunk_if_needed(config, stop_event, first_action_chunk_ready, "main")
-        if float(config.duration_s) <= 0.0:
-            while not stop_event.is_set():
-                time.sleep(0.05)
-        else:
-            deadline = time.monotonic() + float(config.duration_s)
-            while time.monotonic() < deadline and not stop_event.is_set():
-                time.sleep(0.05)
+        _wait_for_runtime_stop_or_terminal_escape(config, stop_event, episode_queue)
     finally:
         stop_event.set()
         _best_effort_put(log_queue, STOP)
@@ -255,7 +250,10 @@ def human_upper_dispatch_process_10hz(
             "replan_interval": config.replan_interval,
             "chunk_trigger_margin": config.chunk_trigger_margin,
             "chunk_expected_stale_steps": config.chunk_expected_stale_steps,
-            "action_dim": 19 if config.vla_action_mode == "pressure_delta19" else 7,
+            # One extra channel carries the model's gripper output before
+            # deployment thresholding. The first 19/7 channels remain the
+            # executable, post-threshold action.
+            "action_dim": (19 if config.vla_action_mode == "pressure_delta19" else 7) + 1,
         }
     )
     mapper = HumanActionMapper(_mapper_config(config))
@@ -285,39 +283,72 @@ def human_upper_dispatch_process_10hz(
                 chunk_msg = chunk_queue.get_nowait()
             except queue.Empty:
                 break
-            executor.submit_chunk(chunk_msg["chunk"], observation_timestamp=float(chunk_msg["start_step"]), inference_start_timestamp=float(chunk_msg["inference_start_ns"]), inference_end_timestamp=float(chunk_msg["inference_end_ns"]), request_tick=int(chunk_msg.get("request_tick", chunk_msg["start_step"])), result_tick=int(chunk_msg.get("result_tick", chunk_msg["start_step"])), next_dispatch_tick=steps, drop_stale_actions=True)
+            processed_chunk = np.asarray(chunk_msg["chunk"], dtype=np.float32)
+            raw_chunk = np.asarray(chunk_msg.get("raw_chunk", processed_chunk), dtype=np.float32)
+            executor_chunk = np.concatenate([processed_chunk, raw_chunk[:, 6:7]], axis=1)
+            executor.submit_chunk(executor_chunk, observation_timestamp=float(chunk_msg["start_step"]), inference_start_timestamp=float(chunk_msg["inference_start_ns"]), inference_end_timestamp=float(chunk_msg["inference_end_ns"]), request_tick=int(chunk_msg.get("request_tick", chunk_msg["start_step"])), result_tick=int(chunk_msg.get("result_tick", chunk_msg["start_step"])), next_dispatch_tick=steps, drop_stale_actions=True)
             inference_running = False
 
         vla_record_source = "exception_fallback"
         vla_fallback = False
-        raw_vla_action = np.zeros(19 if config.vla_action_mode == "pressure_delta19" else 7, dtype=np.float32)
+        action_dim = 19 if config.vla_action_mode == "pressure_delta19" else 7
+        processed_vla_action = np.zeros(action_dim, dtype=np.float32)
+        raw_vla_action = np.zeros(action_dim, dtype=np.float32)
         try:
             record = executor.get_action(steps, time.monotonic())
-            raw_vla_action = record.action.copy()
+            processed_vla_action = record.action[:action_dim].copy()
+            raw_vla_action = processed_vla_action.copy()
+            raw_vla_action[6] = float(record.action[action_dim])
             vla_record_source = record.source
             vla_fallback = "fallback" in record.source
             if vla_fallback:
                 fallbacks += 1
+                processed_vla_action[6] = float(latest_state.get("gripper_open", 1.0))
                 raw_vla_action[6] = float(latest_state.get("gripper_open", 1.0))
         except Exception:
             fallbacks += 1
             vla_fallback = True
+            processed_vla_action[6] = float(latest_state.get("gripper_open", 1.0))
             raw_vla_action[6] = float(latest_state.get("gripper_open", 1.0))
         if config.remote_control_debug:
+            processed_vla_action.fill(0.0)
+            processed_vla_action[6] = 0.5
             raw_vla_action.fill(0.0)
             raw_vla_action[6] = 0.5
             vla_record_source = "remote_control_debug_zero_vla"
             vla_fallback = False
         vla_action7, feedforward_pressure12, pressure_delta12 = _decode_human_runtime_vla_action(
             config,
-            raw_vla_action,
+            processed_vla_action,
             latest_state,
         )
 
         human_cmd = mapper.map_input(latest_human_snapshot, current_state12=np.asarray(latest_state["state12"], dtype=np.float32))
         result = manager.step(vla_action7=vla_action7, human_command=human_cmd, vla_fallback=vla_fallback)
+        executed_feedforward_pressure12, executed_pressure_delta12 = _select_executed_pressure_action(
+            config,
+            action_source=result.action_source,
+            latest_state=latest_state,
+            vla_feedforward_pressure12=feedforward_pressure12,
+            vla_pressure_delta12=pressure_delta12,
+        )
         target_result = target_integrator.step(result.executed_action7, active=result.action_source == "human")
         executed_action7 = target_result.action7
+        executed_action19 = np.concatenate(
+            [
+                executed_action7,
+                np.zeros(12, dtype=np.float32)
+                if executed_pressure_delta12 is None
+                else executed_pressure_delta12,
+            ]
+        ).astype(np.float32)
+        recorded_executed_action = (
+            executed_action19 if config.vla_action_mode == "pressure_delta19" else executed_action7
+        )
+        # Keep the human-side gripper latch aligned with whichever source was
+        # actually executed. A/Y can overwrite it during intervention, and a
+        # later VLA action can overwrite it again after control is released.
+        mapper.sync_gripper_state(float(executed_action7[6]))
         human_steps += int(result.action_source == "human")
         if result.handover_event == "vla_to_human":
             print("[HUMAN] handover vla -> human", flush=True)
@@ -341,10 +372,12 @@ def human_upper_dispatch_process_10hz(
                 "reference_states12": segment.reference_states12.tolist(),
                 "gripper_open": segment.gripper_open,
                 "delta_tcp6": action.delta_tcp6.tolist(),
-                # During intervention only delta TCP/gripper arbitration changes.
-                # The pressure-state VLA feedforward remains active as requested.
+                # Human intervention replaces delta TCP/gripper and executes a
+                # zero pressure delta, while the VLA pressure remains shadow-only.
                 "feedforward_pressure12": (
-                    None if feedforward_pressure12 is None else feedforward_pressure12.tolist()
+                    None
+                    if executed_feedforward_pressure12 is None
+                    else executed_feedforward_pressure12.tolist()
                 ),
                 "action_source": result.action_source,
             },
@@ -367,14 +400,26 @@ def human_upper_dispatch_process_10hz(
             "period_ms": period_ms,
             "vla_action": result.vla_action7.astype(float).tolist(),
             "vla_action19": raw_vla_action.astype(float).tolist(),
+            "processed_vla_action19": processed_vla_action.astype(float).tolist(),
+            "raw_gripper_before_threshold": float(raw_vla_action[6]),
             "vla_pressure_delta12": (
                 None if pressure_delta12 is None else pressure_delta12.astype(float).tolist()
             ),
             "vla_feedforward_pressure12": (
                 None if feedforward_pressure12 is None else feedforward_pressure12.astype(float).tolist()
             ),
+            "executed_pressure_delta12": (
+                None
+                if executed_pressure_delta12 is None
+                else executed_pressure_delta12.astype(float).tolist()
+            ),
+            "executed_feedforward_pressure12": (
+                None
+                if executed_feedforward_pressure12 is None
+                else executed_feedforward_pressure12.astype(float).tolist()
+            ),
             "human_action": result.human_action7.astype(float).tolist(),
-            "executed_action": executed_action7.astype(float).tolist(),
+            "executed_action": recorded_executed_action.astype(float).tolist(),
             "executed_action_delta_tcp": executed_action7[:6].astype(float).tolist(),
             "executed_action_gripper": float(executed_action7[6]),
             "gripper_open": float(latest_state.get("gripper_open", executed_action7[6])),
@@ -407,7 +452,7 @@ def human_upper_dispatch_process_10hz(
         episode_frame = {
             "tick": steps,
             "timestamp": float(steps) / float(config.upper_frequency_hz),
-            "executed_action": executed_action7.astype(float).tolist(),
+            "executed_action": recorded_executed_action.astype(float).tolist(),
             "executed_action_delta_tcp": executed_action7[:6].astype(float).tolist(),
             "executed_action_gripper": float(executed_action7[6]),
             "gripper_open": float(latest_state.get("gripper_open", executed_action7[6])),
@@ -423,6 +468,16 @@ def human_upper_dispatch_process_10hz(
             ),
             "vla_feedforward_pressure12": (
                 None if feedforward_pressure12 is None else feedforward_pressure12.astype(float).tolist()
+            ),
+            "executed_pressure_delta12": (
+                None
+                if executed_pressure_delta12 is None
+                else executed_pressure_delta12.astype(float).tolist()
+            ),
+            "executed_feedforward_pressure12": (
+                None
+                if executed_feedforward_pressure12 is None
+                else executed_feedforward_pressure12.astype(float).tolist()
             ),
             "closed_loop_delta_action12": latest_state.get("closed_loop_delta_action12"),
             "pre_safety_action12": latest_state.get("pre_safety_action12"),
@@ -513,21 +568,81 @@ def xbox_listener_process(config: HumanInterventionRuntimeConfig, stop_event, hu
                     errors += 1
                     snapshot = empty_gamepad_snapshot(connected=False)
                     _best_effort_put(log_queue, {"process": "xbox_listener", "event": "gamepad_read_error", "error": repr(exc)})
-            if sys.stdin is not None and sys.stdin.isatty():
-                try:
-                    import select
-
-                    ready, _, _ = select.select([sys.stdin], [], [], 0)
-                    if ready and sys.stdin.read(1) == "\x1b":
-                        snapshot["esc"] = True
-                except Exception:
-                    pass
             _drain_put(human_state_queue, snapshot)
             sent += 1
             timer.wait_next()
     finally:
         reader.close()
     summary_queue.put({"name": "xbox_listener", "summary": {"snapshots": sent, "errors": errors, "backend": config.gamepad_backend}})
+
+
+def _wait_for_runtime_stop_or_terminal_escape(
+    config: HumanInterventionRuntimeConfig,
+    stop_event,
+    episode_queue,
+) -> None:
+    """Poll ESC in the main process, which owns the launching terminal's stdin."""
+    keyboard_fd, keyboard_settings = _enable_single_key_stdin()
+    deadline = None
+    if float(config.duration_s) > 0.0:
+        deadline = time.monotonic() + float(config.duration_s)
+    try:
+        while not stop_event.is_set():
+            if deadline is not None and time.monotonic() >= deadline:
+                return
+            if keyboard_fd is not None and _stdin_escape_ready(keyboard_fd):
+                print("[SAFETY] keyboard ESC shutdown", flush=True)
+                _best_effort_put(
+                    episode_queue,
+                    {
+                        "event": "close_episode",
+                        "success": False,
+                        "failure": False,
+                        "termination_reason": "esc_interrupted",
+                    },
+                )
+                stop_event.set()
+                return
+            time.sleep(0.02)
+    finally:
+        _restore_stdin_settings(keyboard_fd, keyboard_settings)
+
+
+def _enable_single_key_stdin() -> tuple[int | None, list[Any] | None]:
+    if sys.stdin is None or not sys.stdin.isatty():
+        return None, None
+    try:
+        import termios
+        import tty
+
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        tty.setcbreak(fd)
+        return fd, old_settings
+    except Exception:
+        return None, None
+
+
+def _stdin_escape_ready(fd: int) -> bool:
+    try:
+        import os
+        import select
+
+        ready, _, _ = select.select([fd], [], [], 0)
+        return bool(ready and os.read(fd, 1) == b"\x1b")
+    except Exception:
+        return False
+
+
+def _restore_stdin_settings(fd: int | None, settings: list[Any] | None) -> None:
+    if fd is None or settings is None:
+        return
+    try:
+        import termios
+
+        termios.tcsetattr(fd, termios.TCSANOW, settings)
+    except Exception:
+        pass
 
 
 def episode_saver_process(config: HumanInterventionRuntimeConfig, stop_event, episode_queue, summary_queue) -> None:
@@ -576,6 +691,24 @@ def _decode_human_runtime_vla_action(
     latest_state: dict[str, Any],
 ) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None]:
     return _decode_vla_action(config, raw_vla_action, latest_state)
+
+
+def _select_executed_pressure_action(
+    config: HumanInterventionRuntimeConfig,
+    *,
+    action_source: str,
+    latest_state: dict[str, Any],
+    vla_feedforward_pressure12: np.ndarray | None,
+    vla_pressure_delta12: np.ndarray | None,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Keep VLA pressure in shadow mode while a human delta-TCP target is active."""
+    if config.vla_action_mode != "pressure_delta19" or vla_feedforward_pressure12 is None:
+        return vla_feedforward_pressure12, vla_pressure_delta12
+    if action_source != "human":
+        return vla_feedforward_pressure12.copy(), (
+            None if vla_pressure_delta12 is None else vla_pressure_delta12.copy()
+        )
+    return _current_pressure_norm12(latest_state), np.zeros(12, dtype=np.float32)
 
 
 def _mapper_config(config: HumanInterventionRuntimeConfig) -> HumanActionMapperConfig:

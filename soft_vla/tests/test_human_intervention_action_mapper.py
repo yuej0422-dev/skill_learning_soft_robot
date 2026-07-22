@@ -30,6 +30,19 @@ class HumanActionMapperTest(unittest.TestCase):
         self.assertEqual(float(open_cmd.action7[6]), 1.0)
         self.assertEqual(open_cmd.gripper_command, 1)
 
+    def test_executed_gripper_sync_replaces_stale_human_latch(self):
+        mapper = HumanActionMapper()
+        mapper.map_input({"axes": {}, "buttons": {"a": True}})
+        mapper.sync_gripper_state(1.0)
+
+        neutral = mapper.map_input({"axes": {"left_y": -1.0}, "buttons": {}})
+        self.assertIsNone(neutral.gripper_command)
+        self.assertEqual(float(neutral.action7[6]), 1.0)
+
+        close = mapper.map_input({"axes": {}, "buttons": {"a": True}})
+        self.assertEqual(close.gripper_command, 0)
+        self.assertEqual(float(close.action7[6]), 0.0)
+
     def test_rotation_disabled_and_single_axis_enabled(self):
         disabled = HumanActionMapper(HumanActionMapperConfig(rotation_enabled=False))
         cmd = disabled.map_input({"axes": {"right_x": 1.0, "right_y": 1.0}, "buttons": {}})
